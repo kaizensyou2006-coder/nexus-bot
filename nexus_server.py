@@ -19,7 +19,7 @@ Cles config utiles : DISCORD_TOKEN, DISCORD_CHANNEL, PANEL_CHANNEL, GUILD_ID,
    PUBLIC_URL, AUTH_TOKEN, BITGET_KEY/SECRET/PASS, OCR_API_KEY, PORT.
 ========================================================================
 """
-import os, sys, json, time, hmac, hashlib, base64, asyncio, re, io, itertools
+import os, sys, json, time, hmac, hashlib, base64, asyncio, re, io, itertools, datetime
 import urllib.request
 from urllib.parse import parse_qs
 import aiohttp
@@ -726,6 +726,38 @@ def _momo_totals():
     exp = sum(float(m.get("amount", 0) or 0) for m in momo if m.get("type") == "exp")
     return inc, exp, inc - exp, len(momo)
 
+def _wat_today():
+    """Date du jour en heure du Bénin (UTC+1)."""
+    return (datetime.datetime.utcnow() + datetime.timedelta(hours=1)).date()
+
+def _item_date(m):
+    d = m.get("date")
+    if d:
+        try:
+            return datetime.date.fromisoformat(d)
+        except Exception:
+            pass
+    ts = (m.get("ts", 0) or 0) / 1000
+    try:
+        return (datetime.datetime.utcfromtimestamp(ts) + datetime.timedelta(hours=1)).date()
+    except Exception:
+        return _wat_today()
+
+def momo_totals_period(period):
+    """('jour'|'semaine'|'mois') -> (entrees, sorties, net, nb) sur la periode (heure Benin)."""
+    today = _wat_today()
+    items = STATE.get("momo") or []
+    if period == "jour":
+        sel = [m for m in items if _item_date(m) == today]
+    elif period == "semaine":
+        start = today - datetime.timedelta(days=6)
+        sel = [m for m in items if _item_date(m) >= start]
+    else:  # mois (mois calendaire courant)
+        sel = [m for m in items if _item_date(m).year == today.year and _item_date(m).month == today.month]
+    inc = sum(float(m.get("amount", 0) or 0) for m in sel if m.get("type") == "inc")
+    exp = sum(float(m.get("amount", 0) or 0) for m in sel if m.get("type") == "exp")
+    return inc, exp, inc - exp, len(sel)
+
 def clean_duplicates():
     momo = STATE.get("momo") or []
     seen, kept = set(), []
@@ -867,6 +899,52 @@ if discord is not None:
             e.add_field(name="App", value=PUBLIC_URL + "/", inline=False)
         e.set_footer(text="NEXUS • serveur 24/7")
         return e
+
+    async def build_recap_embed(period):
+        titles = {"jour": "📅 Récap du jour", "semaine": "🗓️ Récap de la semaine", "mois": "📆 Récap du mois"}
+        e = discord.Embed(title=titles.get(period, "Récap"), color=GOLD)
+        inc, exp, net, cnt = momo_totals_period(period)
+        e.add_field(name="💸 Mobile Money",
+                    value="Entrées **%s**\nSorties **%s**\nNet **%s**\n%d opération(s)"
+                          % (fmt_xof(inc), fmt_xof(exp), fmt_xof(net), cnt), inline=True)
+        ns = STATE.get("nsia")
+        if ns and ns.get("total"):
+            extra = ("\nPV latente %s" % fmt_xof(ns["pv_latente"])) if ns.get("pv_latente") is not None else ""
+            e.add_field(name="🏛 NSIA", value="**%s**%s" % (fmt_xof(ns["total"]), extra), inline=True)
+        try:
+            ov = await bitget_overview(HTTP_SESSION)
+        except Exception:
+            ov = None
+        if ov:
+            e.add_field(name="📈 Bitget", value="**%s**\nSpot %s · Earn %s"
+                        % (fmt_usd(ov["total"]), fmt_usd(ov["spot"]), fmt_usd(ov["earn"])), inline=True)
+        if PUBLIC_URL:
+            e.add_field(name="🌐 Ton app", value=PUBLIC_URL + "/", inline=False)
+        e.set_footer(text="NEXUS • recap automatique")
+        e.timestamp = discord.utils.utcnow()
+        return e
+
+    async def recap_scheduler(client):
+        """Poste automatiquement les récaps jour/semaine/mois à 20h (heure Bénin) dans le salon de rapports."""
+        await client.wait_until_ready()
+        while not client.is_closed():
+            try:
+                now = datetime.datetime.utcnow() + datetime.timedelta(hours=1)
+                keys = STATE.setdefault("recap_keys", {})
+                dkey, wkey, mkey = now.strftime("%Y-%m-%d"), now.strftime("%G-W%V"), now.strftime("%Y-%m")
+                if now.hour >= 20:
+                    if keys.get("daily") != dkey:
+                        await post_report(client, embed=await build_recap_embed("jour"))
+                        keys["daily"] = dkey; save_state()
+                    if now.weekday() == 0 and keys.get("weekly") != wkey:
+                        await post_report(client, embed=await build_recap_embed("semaine"))
+                        keys["weekly"] = wkey; save_state()
+                    if now.day == 1 and keys.get("monthly") != mkey:
+                        await post_report(client, embed=await build_recap_embed("mois"))
+                        keys["monthly"] = mkey; save_state()
+            except Exception as e:
+                sys.stderr.write("[recap] %s\n" % e)
+            await asyncio.sleep(1800)  # vérifie toutes les 30 min
 
     async def post_report(client, embed=None, content=None, view=None):
         """Envoie un message dans le salon des RETOURS (REPORT_CHANNEL), sinon le panneau."""
@@ -1012,6 +1090,27 @@ if discord is not None:
                 "⚠️ Confirmer la **remise à zéro de toutes tes données** (MoMo, NSIA, Bitget) ? Action irréversible.",
                 view=ConfirmResetView(), ephemeral=True)
 
+        @discord.ui.button(label="Récap jour", emoji="📅",
+                           style=discord.ButtonStyle.success, custom_id="nexus:recap_d", row=3)
+        async def b_recap_d(self, interaction, button):
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            await post_report(interaction.client, embed=await build_recap_embed("jour"))
+            await interaction.followup.send("📅 Récap du jour posté dans le salon de rapports.", ephemeral=True)
+
+        @discord.ui.button(label="Récap semaine", emoji="🗓️",
+                           style=discord.ButtonStyle.success, custom_id="nexus:recap_w", row=3)
+        async def b_recap_w(self, interaction, button):
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            await post_report(interaction.client, embed=await build_recap_embed("semaine"))
+            await interaction.followup.send("🗓️ Récap de la semaine posté dans le salon de rapports.", ephemeral=True)
+
+        @discord.ui.button(label="Récap mois", emoji="📆",
+                           style=discord.ButtonStyle.success, custom_id="nexus:recap_m", row=3)
+        async def b_recap_m(self, interaction, button):
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            await post_report(interaction.client, embed=await build_recap_embed("mois"))
+            await interaction.followup.send("📆 Récap du mois posté dans le salon de rapports.", ephemeral=True)
+
     async def post_or_update_panel(client):
         if not PANEL_CHANNEL or not str(PANEL_CHANNEL).isdigit():
             return
@@ -1130,6 +1229,11 @@ async def run_discord(http_session):
         except Exception as e:
             sys.stderr.write("[discord] sync commands: %s\n" % e)
         await post_or_update_panel(client)
+        # Démarre le planificateur de récaps auto (une seule fois, même après reconnexion)
+        if not getattr(client, "_recap_started", False):
+            client._recap_started = True
+            asyncio.create_task(recap_scheduler(client))
+            print("[recap] planificateur de récaps auto démarré (jour/semaine/mois)")
 
     @client.event
     async def on_message(message):
