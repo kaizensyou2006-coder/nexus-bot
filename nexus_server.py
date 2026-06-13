@@ -90,6 +90,7 @@ STATE = {
     "momo": [],
     "nsia": None,
     "bitget": None,      # {total, ts, holdings:[{coin,amt,val}]}
+    "balances": {},      # soldes captures par reseau : {"mtn":..,"moov":..}
     "panel_msg": None,   # id du message du panneau de controle (pour le re-editer)
     "updatedAt": None,
 }
@@ -153,11 +154,13 @@ def save_state():
             sys.stderr.write("[state] upstash save: %s\n" % e)
 
 def reset_state():
-    """Remet tout a zero (MoMo, NSIA, Bitget, patrimoine) — efface aussi la base."""
+    """Remet tout a zero (MoMo, NSIA, Bitget, soldes, patrimoine) — efface aussi la base."""
     STATE["momo"] = []
     STATE["nsia"] = None
     STATE["bitget"] = None
+    STATE["balances"] = {}
     STATE["patrimoine"] = None
+    STATE["recap_keys"] = {}
     save_state()
 
 # ----------------------- Bitget : signature serveur -----------------------
@@ -369,6 +372,16 @@ def detect_network(text):
     """Detecte l'operateur Mobile Money depuis le texte ('moov' ou 'mtn' par defaut)."""
     return "moov" if re.search(r"moov", text or "", re.I) else "mtn"
 
+def detect_balance(text):
+    """Capture d'accueil (MTN/Moov) : extrait le SOLDE -> (net, montant) ou None."""
+    m = re.search(r"solde[^\d]{0,18}(\d[\d   .,]*\d|\d)", text or "", re.I)
+    if not m:
+        return None
+    val = _eur(m.group(1))
+    if val <= 0:
+        return None
+    return detect_network(text), val
+
 def _emit_ops(parsed, net="mtn"):
     """Transforme une liste d'operations analysees en entrees MoMo (+ frais separes)."""
     out = []
@@ -451,16 +464,28 @@ def momo_ingest_text(text, src="sms"):
     return n
 
 # ----------------------- NSIA : releve de portefeuille -----------------------
-# Un nombre europeen complet : "218 248,59", "9 163,1487", "210,26" (milliers = espace).
-_NUM = re.compile(r"\d{1,3}(?:[ \u202f\u00a0]\d{3})*,\d+|\d+,\d+")
+# Nombre avec decimale virgule OU point (tolerant OCR) : "218 248,59", "218 248.59", "9 163,1487".
+_NUM = re.compile(r"\d{1,3}(?:[ \u202f\u00a0]\d{3})*[.,]\d+|\d+[.,]\d+")
+
+def _dec_len(tok):
+    last = max(tok.rfind(","), tok.rfind("."))
+    return len(re.sub(r"[^\d]", "", tok[last + 1:])) if last != -1 else 0
 
 def _eur(s):
-    """'218 248,59' -> 218248.59 (format europeen : espace=milliers, virgule=decimale)."""
-    s = re.sub(r"[ \u202f\u00a0]", "", (s or "").strip())
-    if "," in s:
-        s = s.replace(".", "").replace(",", ".")
+    """Convertit un montant (FR ou OCR) en float. Le DERNIER separateur est la decimale."""
+    s = re.sub(r"[^\d.,]", "", (s or "").strip())
+    if not s:
+        return 0.0
+    last = max(s.rfind(","), s.rfind("."))
+    if last == -1:
+        try:
+            return float(s)
+        except Exception:
+            return 0.0
+    intpart = re.sub(r"[^\d]", "", s[:last])
+    dec = re.sub(r"[^\d]", "", s[last + 1:])
     try:
-        return float(re.sub(r"[^\d.]", "", s) or 0)
+        return float((intpart or "0") + (("." + dec) if dec else ""))
     except Exception:
         return 0.0
 
@@ -469,7 +494,7 @@ def _montants(s):
     out = []
     for m in _NUM.finditer(s or ""):
         tok = m.group()
-        if len(tok.split(",")[1]) == 2:
+        if _dec_len(tok) == 2:
             v = _eur(tok)
             if v > 0:
                 out.append(v)
@@ -479,20 +504,23 @@ def parse_nsia(text):
     if not text:
         return None
     low = text.lower()
-    if not any(k in low for k in ("nsia", "opcvm", "portefeuille", "aurore", "fonds",
-                                  "fcp", "valeur liquidative", "souscription", "rachat", "valorisation")):
+    if not any(k in low for k in ("nsia", "opcvm", "portefeuille", "aurore", "fonds", "fcp",
+                                  "valeur liquidative", "souscription", "rachat", "valorisation",
+                                  "plus-value", "plus value", "montant net", "opportunites", "opportunités")):
         return None
     lines = re.split(r"[\n\r]+", text)
     valorisation = pv_latente = prix_revient = None
     # 1) Ligne "Total portefeuille" (ou la ligne de position) -> valorisation + plus-value latente
     total_line = None
     for ln in lines:
-        if "total portefeuille" in ln.lower():
+        l = ln.lower()
+        if "total" in l and ("portefeuille" in l or "porte" in l):  # tolere l'OCR
             total_line = ln
             break
     if total_line is None:
         for ln in lines:
-            if ("aurore" in ln.lower() or "opcvm" in ln.lower()) and re.search(r"\d{2}-\d{2}-\d{4}", ln):
+            l = ln.lower()
+            if ("aurore" in l or "opcvm" in l or "opportun" in l) and re.search(r"\d{1,2}[-/.]\d{1,2}[-/.]\d{4}", ln):
                 total_line = ln
                 break
     if total_line:
@@ -511,9 +539,9 @@ def parse_nsia(text):
     # 2) Historique des operations (Souscription / Rachat)
     ops = []
     for ln in lines:
-        dm = re.search(r"(\d{2})-(\d{2})-(\d{4})", ln)
+        dm = re.search(r"(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})", ln)
         ll = ln.lower()
-        sens = "Souscription" if "souscription" in ll else ("Rachat" if "rachat" in ll else None)
+        sens = "Souscription" if ("souscription" in ll or "souscri" in ll) else ("Rachat" if "rachat" in ll else None)
         if not (dm and sens):
             continue
         money2 = _montants(ln)
@@ -623,6 +651,7 @@ async def h_state(request):
         "patrimoine": STATE["patrimoine"],
         "momo": momo,
         "nsia": STATE["nsia"],
+        "balances": STATE.get("balances") or {},
         "updatedAt": STATE["updatedAt"],
     }))
 
@@ -759,6 +788,64 @@ def momo_totals_period(days, net=None):
     inc = sum(float(m.get("amount", 0) or 0) for m in sel if m.get("type") == "inc")
     exp = sum(float(m.get("amount", 0) or 0) for m in sel if m.get("type") == "exp")
     return inc, exp, inc - exp, len(sel)
+
+def _ascii(s):
+    """Nettoie pour le PDF (police latin-1)."""
+    return (str(s or "")).encode("latin-1", "replace").decode("latin-1")
+
+def build_pdf_report(days=30):
+    """Genere un rapport patrimoine PDF detaille (octets)."""
+    from fpdf import FPDF
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    pdf.set_font("Helvetica", "B", 16)
+    pdf.cell(0, 10, "NEXUS - Rapport patrimoine", ln=1)
+    pdf.set_font("Helvetica", "", 9)
+    pdf.cell(0, 5, _ascii("Fenetre : %d jours - genere automatiquement" % days), ln=1)
+    pdf.ln(2)
+    # --- Mobile Money ---
+    inc, exp, net, cnt = momo_totals_period(days)
+    mtn, moov = momo_totals_period(days, "mtn"), momo_totals_period(days, "moov")
+    pdf.set_font("Helvetica", "B", 12); pdf.cell(0, 8, "Mobile Money", ln=1)
+    pdf.set_font("Helvetica", "", 10)
+    pdf.cell(0, 6, _ascii("Entrees: %s   Sorties: %s   Net: %s   (%d op.)" % (fmt_xof(inc), fmt_xof(exp), fmt_xof(net), cnt)), ln=1)
+    pdf.cell(0, 6, _ascii("MTN net: %s (%d op.)   Moov net: %s (%d op.)" % (fmt_xof(mtn[2]), mtn[3], fmt_xof(moov[2]), moov[3])), ln=1)
+    # --- NSIA ---
+    ns = STATE.get("nsia")
+    if ns and ns.get("total"):
+        pdf.ln(2); pdf.set_font("Helvetica", "B", 12); pdf.cell(0, 8, "NSIA (OPCVM)", ln=1)
+        pdf.set_font("Helvetica", "", 10)
+        pdf.cell(0, 6, _ascii("Valorisation: %s" % fmt_xof(ns["total"])), ln=1)
+        if ns.get("pv_latente") is not None:
+            pdf.cell(0, 6, _ascii("Plus-value latente: %s" % fmt_xof(ns["pv_latente"])), ln=1)
+        if ns.get("invested"):
+            pdf.cell(0, 6, _ascii("Investi net: %s" % fmt_xof(ns["invested"])), ln=1)
+        if ns.get("pv_realisee"):
+            pdf.cell(0, 6, _ascii("Plus-value realisee: %s" % fmt_xof(ns["pv_realisee"])), ln=1)
+        for o in (ns.get("operations") or [])[-15:]:
+            pdf.cell(0, 5, _ascii("   %s  %s  %s%s" % (o.get("date", ""), o.get("label", ""), fmt_xof(o.get("montant", 0)),
+                                                       ("  (pv " + fmt_xof(o["pv"]) + ")") if o.get("pv") else "")), ln=1)
+    # --- Bitget (dernier sync stocke) ---
+    bg = STATE.get("bitget")
+    if bg and bg.get("total"):
+        pdf.ln(2); pdf.set_font("Helvetica", "B", 12); pdf.cell(0, 8, "Bitget", ln=1)
+        pdf.set_font("Helvetica", "", 10)
+        pdf.cell(0, 6, _ascii("Total: %s   Spot: %s   Earn: %s" % (fmt_usd(bg["total"]), fmt_usd(bg.get("spot", 0)), fmt_usd(bg.get("earn", 0)))), ln=1)
+        for h in (bg.get("holdings") or [])[:12]:
+            if h.get("val", 0) > 0.01:
+                pdf.cell(0, 5, _ascii("   %s : %s" % (h.get("coin", ""), fmt_usd(h.get("val", 0)))), ln=1)
+    # --- Dernieres operations MoMo ---
+    momo = STATE.get("momo") or []
+    if momo:
+        pdf.ln(2); pdf.set_font("Helvetica", "B", 12); pdf.cell(0, 8, "Dernieres operations Mobile Money", ln=1)
+        pdf.set_font("Helvetica", "", 8)
+        for mop in momo[-45:][::-1]:
+            sign = "+" if mop.get("type") == "inc" else "-"
+            pdf.cell(0, 5, _ascii("%s %s  [%s]  %s" % (sign, fmt_xof(mop.get("amount", 0)),
+                                                       (mop.get("net", "mtn") or "").upper(), (mop.get("payee") or mop.get("text") or "")[:55])), ln=1)
+    out = pdf.output()
+    return bytes(out)
 
 def clean_duplicates():
     momo = STATE.get("momo") or []
@@ -984,17 +1071,66 @@ if discord is not None:
                 sys.stderr.write("[recap] %s\n" % e)
             await asyncio.sleep(3600)  # vérifie toutes les heures
 
-    async def post_report(client, embed=None, content=None, view=None):
+    async def post_report(client, embed=None, content=None, view=None, file=None):
         """Envoie un message dans le salon des RETOURS (REPORT_CHANNEL), sinon le panneau."""
         cid = REPORT_CHANNEL or PANEL_CHANNEL
         if not cid or not str(cid).isdigit():
             return None
         try:
             ch = client.get_channel(int(cid)) or await client.fetch_channel(int(cid))
-            return await ch.send(content=content, embed=embed, view=view)
+            kw = {}
+            if content is not None: kw["content"] = content
+            if embed is not None: kw["embed"] = embed
+            if view is not None: kw["view"] = view
+            if file is not None: kw["file"] = file
+            return await ch.send(**kw)
         except Exception as e:
             sys.stderr.write("[report] envoi: %s\n" % e)
             return None
+
+    async def purge_channels(client):
+        """RESET : supprime les rapports postés par le bot + les PDF/captures d'import."""
+        deleted = 0
+        # Salon de rapports : messages du bot
+        for cid in (REPORT_CHANNEL, PANEL_CHANNEL):
+            if cid and str(cid).isdigit():
+                try:
+                    ch = client.get_channel(int(cid)) or await client.fetch_channel(int(cid))
+                    async for msg in ch.history(limit=200):
+                        if msg.author.id == client.user.id and (not STATE.get("panel_msg") or msg.id != STATE.get("panel_msg")):
+                            try:
+                                await msg.delete(); deleted += 1
+                            except Exception:
+                                pass
+                except Exception as e:
+                    sys.stderr.write("[purge] report: %s\n" % e)
+        # Salon d'import : messages contenant des pièces jointes (tes PDF/captures)
+        if DISCORD_CHANNEL and str(DISCORD_CHANNEL).isdigit():
+            try:
+                ch = client.get_channel(int(DISCORD_CHANNEL)) or await client.fetch_channel(int(DISCORD_CHANNEL))
+                async for msg in ch.history(limit=200):
+                    if msg.attachments:
+                        try:
+                            await msg.delete(); deleted += 1
+                        except Exception:
+                            pass
+            except Exception as e:
+                sys.stderr.write("[purge] import: %s\n" % e)
+        return deleted
+
+    def search_momo(query):
+        """Recherche d'opérations MoMo par nom/texte ou montant."""
+        q = (query or "").strip().lower()
+        if not q:
+            return []
+        items = STATE.get("momo") or []
+        num = re.sub(r"[^\d]", "", q)
+        res = []
+        for m in items:
+            hay = ((m.get("payee") or "") + " " + (m.get("text") or "") + " " + (m.get("ref") or "")).lower()
+            if q in hay or (num and num in str(int(m.get("amount", 0) or 0))):
+                res.append(m)
+        return res[-25:]
 
     async def rescan_import(client):
         """Re-scanne le salon d'import et ré-analyse les pièces jointes (dedup → aucun doublon)."""
@@ -1026,11 +1162,39 @@ if discord is not None:
         async def confirm(self, interaction, button):
             reset_state()
             await interaction.response.edit_message(
-                content="🧨 Remise à zéro effectuée : MoMo, NSIA, Bitget et patrimoine effacés.", view=None)
+                content="🧨 Données remises à zéro. Suppression des rapports et PDF en cours…", view=None)
+            try:
+                n = await purge_channels(interaction.client)
+            except Exception:
+                n = 0
+            try:
+                await interaction.followup.send(
+                    "🧨 Tout effacé : données à zéro + **%d** message(s)/PDF supprimé(s) des salons." % n, ephemeral=True)
+            except Exception:
+                pass
 
         @discord.ui.button(label="Annuler", style=discord.ButtonStyle.secondary)
         async def cancel(self, interaction, button):
             await interaction.response.edit_message(content="Annulé — rien n'a été effacé.", view=None)
+
+    class SearchModal(discord.ui.Modal, title="🔎 Recherche de dépense"):
+        q = discord.ui.TextInput(label="Nom, libellé ou montant",
+                                 placeholder="ex : SBEE, MARIE, 30000", required=True, max_length=60)
+
+        async def on_submit(self, interaction):
+            res = search_momo(str(self.q))
+            if not res:
+                await interaction.response.send_message("Aucun résultat pour « %s »." % self.q, ephemeral=True)
+                return
+            lines = []
+            for m in res[::-1]:
+                sign = "➕" if m.get("type") == "inc" else "➖"
+                lines.append("%s **%s** [%s] · %s" % (sign, fmt_xof(m.get("amount", 0)),
+                             (m.get("net", "mtn") or "").upper(), (m.get("payee") or m.get("text") or "")[:40]))
+            e = discord.Embed(title="🔎 Résultats : %s" % self.q, color=GREEN,
+                              description=("\n".join(lines))[:3900])
+            e.set_footer(text="%d résultat(s)" % len(res))
+            await interaction.response.send_message(embed=e, ephemeral=True)
 
     class PanelView(discord.ui.View):
         def __init__(self):
@@ -1154,6 +1318,24 @@ if discord is not None:
             await post_report(interaction.client, embed=await build_recap_embed(30), view=ReportActionView())
             await interaction.followup.send("📆 Rapport 30 jours posté dans le salon de rapports.", ephemeral=True)
 
+        @discord.ui.button(label="Rapport PDF", emoji="📄",
+                           style=discord.ButtonStyle.primary, custom_id="nexus:pdf", row=4)
+        async def b_pdf(self, interaction, button):
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            try:
+                data = build_pdf_report(30)
+                f = discord.File(io.BytesIO(data), filename="rapport_nexus_30j.pdf")
+                await post_report(interaction.client, content="📄 **Rapport patrimoine détaillé (30 jours)**",
+                                  file=f, view=ReportActionView())
+                await interaction.followup.send("📄 Rapport PDF posté dans le salon de rapports.", ephemeral=True)
+            except Exception as ex:
+                await interaction.followup.send("Erreur PDF : %s" % ex, ephemeral=True)
+
+        @discord.ui.button(label="Recherche dépense", emoji="🔎",
+                           style=discord.ButtonStyle.secondary, custom_id="nexus:search", row=4)
+        async def b_search(self, interaction, button):
+            await interaction.response.send_modal(SearchModal())
+
         @discord.ui.button(label="Lien du site", emoji="🔗",
                            style=discord.ButtonStyle.secondary, custom_id="nexus:link", row=2)
         async def b_link(self, interaction, button):
@@ -1225,8 +1407,19 @@ if discord is not None:
                 await message.add_reaction("🏛")
                 return "🏛 NSIA : total portefeuille **%s**." % fmt_xof(nsia["total"])
             n = add_momo(parse_momo_text(text))
-            await message.add_reaction("🧾" if n else "❓")
-            return ("🧾 **%d** opération(s) détectée(s) sur l'image." % n) if n else "🧾 Aucune opération détectée sur l'image."
+            if n:
+                await message.add_reaction("🧾")
+                return "🧾 **%d** opération(s) détectée(s) sur l'image." % n
+            # Pas d'opération : capture d'accueil ? -> lire le SOLDE (MTN/Moov)
+            bal = detect_balance(text)
+            if bal:
+                net, val = bal
+                STATE.setdefault("balances", {})[net] = val
+                save_state()
+                await message.add_reaction("💰")
+                return "💰 Solde **%s** détecté : **%s** (compte mis à jour)." % (("Moov" if net == "moov" else "MTN"), fmt_xof(val))
+            await message.add_reaction("❓")
+            return "🧾 Aucune opération ni solde détecté sur l'image."
         return None
 
 async def run_discord(http_session):
