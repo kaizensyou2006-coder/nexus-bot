@@ -143,45 +143,68 @@ async def bitget_request(session, method, path, body=""):
         text = await r.text()
         return r.status, text
 
-async def bitget_spot_total(session):
-    """Valeur totale du spot Bitget en USDT + detail des positions.
-    Renvoie (total_usdt, [(coin, montant, valeur_usdt), ...]) ou (None, []) si clecs absentes."""
+async def bitget_overview(session):
+    """Vue complete du compte Bitget en USDT.
+    Renvoie un dict {total, spot, earn, others, holdings:[(coin,amt,val)]} ou None.
+    'total' = valeur de TOUS les comptes (spot + earn + bots + futures...), pas juste le spot."""
     if not (BITGET_KEY and BITGET_SECRET and BITGET_PASS):
-        return None, []
-    assets = []
+        return None
+    res = {"total": 0.0, "spot": 0.0, "earn": 0.0, "others": 0.0, "holdings": []}
+    got_total = False
+    # 1) Total fiable par type de compte
     try:
-        _, txt = await bitget_request(session, "GET", "/api/v2/spot/account/assets")
+        _, txt = await bitget_request(session, "GET", "/api/v2/account/all-account-balance")
         j = json.loads(txt)
         if j.get("code") == "00000":
-            for a in j.get("data", []):
-                amt = (float(a.get("available", 0) or 0)
-                       + float(a.get("frozen", 0) or 0)
-                       + float(a.get("locked", 0) or 0))
-                if amt > 0:
-                    assets.append((str(a.get("coin", "")).upper(), amt))
+            for b in j.get("data", []):
+                t = str(b.get("accountType", "")).lower()
+                v = float(b.get("usdtBalance", 0) or 0)
+                res["total"] += v
+                if t == "spot":
+                    res["spot"] = v
+                elif t == "earn":
+                    res["earn"] = v
+                else:
+                    res["others"] += v
+            got_total = True
     except Exception as e:
-        sys.stderr.write("[bitget] assets: %s\n" % e)
-        return None, []
-    if not assets:
-        return 0.0, []
+        sys.stderr.write("[bitget] all-account-balance: %s\n" % e)
+    # 2) Prix pour valoriser les positions
     prices = {}
     try:
-        _, txt2 = await bitget_request(session, "GET", "/api/v2/spot/market/tickers")
-        j2 = json.loads(txt2)
-        for t in j2.get("data", []):
+        _, t2 = await bitget_request(session, "GET", "/api/v2/spot/market/tickers")
+        for t in json.loads(t2).get("data", []):
             prices[t.get("symbol", "")] = float(t.get("lastPr", 0) or 0)
     except Exception as e:
         sys.stderr.write("[bitget] tickers: %s\n" % e)
-    total, holdings = 0.0, []
-    for coin, amt in assets:
-        if coin in ("USDT", "USDC", "USD", "BUSD"):
-            val = amt
-        else:
-            val = amt * prices.get(coin + "USDT", 0.0)
-        total += val
-        holdings.append((coin, amt, val))
-    holdings.sort(key=lambda x: -x[2])
-    return total, holdings
+    def _val(coin, amt):
+        return amt if coin in ("USDT", "USDC", "USD", "BUSD") else amt * prices.get(coin + "USDT", 0.0)
+    # 3) Detail Spot
+    try:
+        _, t3 = await bitget_request(session, "GET", "/api/v2/spot/account/assets")
+        for a in json.loads(t3).get("data", []):
+            amt = (float(a.get("available", 0) or 0) + float(a.get("frozen", 0) or 0)
+                   + float(a.get("locked", 0) or 0))
+            if amt > 0:
+                c = str(a.get("coin", "")).upper()
+                res["holdings"].append((c, amt, _val(c, amt)))
+    except Exception as e:
+        sys.stderr.write("[bitget] spot assets: %s\n" % e)
+    # 4) Detail Earn (epargne / DCA)
+    try:
+        _, t4 = await bitget_request(session, "GET", "/api/v2/earn/account/assets")
+        for e in json.loads(t4).get("data", []):
+            amt = float(e.get("amount", 0) or 0)
+            if amt > 0:
+                c = str(e.get("coin", "")).upper()
+                res["holdings"].append((c + " ⟢Earn", amt, _val(c, amt)))
+    except Exception as e:
+        sys.stderr.write("[bitget] earn assets: %s\n" % e)
+    # Fallback : si all-account-balance vide, total = somme des positions
+    if not got_total or res["total"] <= 0:
+        res["total"] = sum(v for _, _, v in res["holdings"])
+    res["holdings"].sort(key=lambda x: -x[2])
+    return res
 
 # ----------------------- MoMo : detection transactions -----------------------
 # Mots-cles qui donnent le SENS de l'operation (revenu vs depense/retrait).
@@ -641,15 +664,19 @@ if discord is not None:
                         value="**%s**\nmaj <t:%d:R>" % (fmt_xof(ns["total"]), int(ns.get("ts", 0) / 1000)),
                         inline=True)
         try:
-            total, holdings = await bitget_spot_total(HTTP_SESSION)
+            ov = await bitget_overview(HTTP_SESSION)
         except Exception as ex:
-            total, holdings = None, []
+            ov = None
             sys.stderr.write("[report] bitget: %s\n" % ex)
-        if total is not None:
-            top = "\n".join("• %s : %s" % (c, fmt_usd(v)) for c, a, v in holdings[:4] if v > 0.01)
-            e.add_field(name="📈 Bitget (spot)", value="**%s**\n%s" % (fmt_usd(total), top or "—"), inline=True)
-            STATE["bitget"] = {"total": total, "ts": int(time.time() * 1000),
-                               "holdings": [{"coin": c, "amt": a, "val": v} for c, a, v in holdings]}
+        if ov is not None:
+            top = "\n".join("• %s : %s" % (c, fmt_usd(v)) for c, a, v in ov["holdings"][:4] if v > 0.01)
+            e.add_field(name="📈 Bitget (tous comptes)",
+                        value="**%s**\nSpot %s · Earn %s\n%s"
+                              % (fmt_usd(ov["total"]), fmt_usd(ov["spot"]), fmt_usd(ov["earn"]), top or "—"),
+                        inline=True)
+            STATE["bitget"] = {"total": ov["total"], "spot": ov["spot"], "earn": ov["earn"],
+                               "others": ov["others"], "ts": int(time.time() * 1000),
+                               "holdings": [{"coin": c, "amt": a, "val": v} for c, a, v in ov["holdings"]]}
             save_state()
         if STATE.get("patrimoine"):
             e.add_field(name="🗂 Patrimoine (app)", value="Synchronisé depuis l'app ✅", inline=False)
@@ -686,23 +713,26 @@ if discord is not None:
         return e
 
     async def build_bitget_embed():
-        e = discord.Embed(title="📈 Bitget — Spot", color=AMBER)
+        e = discord.Embed(title="📈 Bitget — compte complet", color=AMBER)
         if not (BITGET_KEY and BITGET_SECRET and BITGET_PASS):
             e.description = "Clés Bitget non configurées sur le serveur."
             return e
         try:
-            total, holdings = await bitget_spot_total(HTTP_SESSION)
+            ov = await bitget_overview(HTTP_SESSION)
         except Exception as ex:
             e.description = "Erreur Bitget : %s" % ex
             return e
-        if total is None:
+        if ov is None:
             e.description = "Impossible de joindre Bitget (vérifie les clés / la permission Lecture)."
             return e
-        e.add_field(name="Valeur totale", value="**%s**" % fmt_usd(total), inline=False)
+        e.add_field(name="Valeur totale (tous comptes)", value="**%s**" % fmt_usd(ov["total"]), inline=False)
+        e.add_field(name="Répartition",
+                    value="Spot **%s** · Earn **%s** · Autres **%s**"
+                          % (fmt_usd(ov["spot"]), fmt_usd(ov["earn"]), fmt_usd(ov["others"])), inline=False)
         body = "\n".join("• **%s** — %s (%s)"
                          % (c, ("%.6f" % a).rstrip("0").rstrip("."), fmt_usd(v))
-                         for c, a, v in holdings[:12] if v > 0.01) or "Aucune position."
-        e.add_field(name="Positions", value=body[:1024], inline=False)
+                         for c, a, v in ov["holdings"][:12] if v > 0.01) or "Aucune position."
+        e.add_field(name="Positions (Spot + Earn)", value=body[:1024], inline=False)
         e.timestamp = discord.utils.utcnow()
         return e
 
@@ -767,12 +797,15 @@ if discord is not None:
         async def b_sync(self, interaction, button):
             await interaction.response.defer(ephemeral=True, thinking=True)
             try:
-                total, holdings = await bitget_spot_total(HTTP_SESSION)
-                if total is not None:
-                    STATE["bitget"] = {"total": total, "ts": int(time.time() * 1000),
-                                       "holdings": [{"coin": c, "amt": a, "val": v} for c, a, v in holdings]}
+                ov = await bitget_overview(HTTP_SESSION)
+                if ov is not None:
+                    STATE["bitget"] = {"total": ov["total"], "spot": ov["spot"], "earn": ov["earn"],
+                                       "others": ov["others"], "ts": int(time.time() * 1000),
+                                       "holdings": [{"coin": c, "amt": a, "val": v} for c, a, v in ov["holdings"]]}
                     save_state()
-                    await interaction.followup.send("🔄 Synchronisé. Bitget : **%s**." % fmt_usd(total), ephemeral=True)
+                    await interaction.followup.send(
+                        "🔄 Synchronisé. Bitget total : **%s** (Spot %s · Earn %s)."
+                        % (fmt_usd(ov["total"]), fmt_usd(ov["spot"]), fmt_usd(ov["earn"])), ephemeral=True)
                 else:
                     await interaction.followup.send("Synchro : Bitget indisponible (clés ?).", ephemeral=True)
             except Exception as ex:
