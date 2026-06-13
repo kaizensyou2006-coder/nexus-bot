@@ -20,6 +20,7 @@ Cles config utiles : DISCORD_TOKEN, DISCORD_CHANNEL, PANEL_CHANNEL, GUILD_ID,
 ========================================================================
 """
 import os, sys, json, time, hmac, hashlib, base64, asyncio, re, io, itertools
+import urllib.request
 from urllib.parse import parse_qs
 import aiohttp
 from aiohttp import web
@@ -58,6 +59,9 @@ def _conf(key, default=""):
 DISCORD_TOKEN   = _conf("DISCORD_TOKEN")
 DISCORD_CHANNEL = _conf("DISCORD_CHANNEL")            # salon d'IMPORT (PDF/captures/NSIA)
 PANEL_CHANNEL   = _conf("PANEL_CHANNEL")              # salon du PANNEAU de controle (boutons)
+REPORT_CHANNEL  = _conf("REPORT_CHANNEL")             # salon des RETOURS du bot (rapports/recaps/PDF)
+UPSTASH_URL     = _conf("UPSTASH_REDIS_REST_URL")     # base de donnees Upstash (persistance)
+UPSTASH_TOKEN   = _conf("UPSTASH_REDIS_REST_TOKEN")
 GUILD_ID        = _conf("GUILD_ID")                   # optionnel : sync rapide des slash-commands
 PUBLIC_URL      = _conf("PUBLIC_URL").rstrip("/")     # ex: http://34.x.x.x:8080  (pour le bouton "Ouvrir l'app")
 AUTH_TOKEN      = _conf("AUTH_TOKEN", "nexus229")
@@ -103,8 +107,31 @@ def fmt_usd(n):
     except Exception:
         return "$%s" % n
 
+def _upstash(cmd):
+    """Execute une commande Redis via l'API REST Upstash (synchrone). cmd = liste de chaines."""
+    if not (UPSTASH_URL and UPSTASH_TOKEN):
+        return None
+    req = urllib.request.Request(
+        UPSTASH_URL.rstrip("/"),
+        data=json.dumps(cmd).encode("utf-8"),
+        headers={"Authorization": "Bearer " + UPSTASH_TOKEN,
+                 "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.loads(r.read().decode("utf-8")).get("result")
+
 def load_state():
     global STATE
+    # 1) Base de donnees Upstash si configuree (persiste meme apres redemarrage)
+    if UPSTASH_URL and UPSTASH_TOKEN:
+        try:
+            raw = _upstash(["GET", "nexus_state"])
+            if raw:
+                STATE.update(json.loads(raw))
+                print("[state] charge depuis Upstash (%d octets)" % len(raw))
+                return
+        except Exception as e:
+            sys.stderr.write("[state] upstash load: %s\n" % e)
+    # 2) Sinon fichier local
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             STATE.update(json.load(f))
@@ -113,11 +140,25 @@ def load_state():
 
 def save_state():
     STATE["updatedAt"] = int(time.time() * 1000)
+    data = json.dumps(STATE, ensure_ascii=False)
     try:
         with open(STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(STATE, f, ensure_ascii=False)
+            f.write(data)
     except Exception as e:
-        sys.stderr.write("[state] save error: %s\n" % e)
+        sys.stderr.write("[state] file save error: %s\n" % e)
+    if UPSTASH_URL and UPSTASH_TOKEN:
+        try:
+            _upstash(["SET", "nexus_state", data])
+        except Exception as e:
+            sys.stderr.write("[state] upstash save: %s\n" % e)
+
+def reset_state():
+    """Remet tout a zero (MoMo, NSIA, Bitget, patrimoine) — efface aussi la base."""
+    STATE["momo"] = []
+    STATE["nsia"] = None
+    STATE["bitget"] = None
+    STATE["patrimoine"] = None
+    save_state()
 
 # ----------------------- Bitget : signature serveur -----------------------
 def bitget_sign(ts, method, path, body=""):
@@ -757,6 +798,54 @@ if discord is not None:
         e.set_footer(text="NEXUS • serveur 24/7")
         return e
 
+    async def post_report(client, embed=None, content=None, view=None):
+        """Envoie un message dans le salon des RETOURS (REPORT_CHANNEL), sinon le panneau."""
+        cid = REPORT_CHANNEL or PANEL_CHANNEL
+        if not cid or not str(cid).isdigit():
+            return None
+        try:
+            ch = client.get_channel(int(cid)) or await client.fetch_channel(int(cid))
+            return await ch.send(content=content, embed=embed, view=view)
+        except Exception as e:
+            sys.stderr.write("[report] envoi: %s\n" % e)
+            return None
+
+    async def rescan_import(client):
+        """Re-scanne le salon d'import et ré-analyse les pièces jointes (dedup → aucun doublon)."""
+        n_msg, summaries = 0, []
+        if not (DISCORD_CHANNEL and str(DISCORD_CHANNEL).isdigit()):
+            return n_msg, summaries
+        try:
+            ch = client.get_channel(int(DISCORD_CHANNEL)) or await client.fetch_channel(int(DISCORD_CHANNEL))
+            async for msg in ch.history(limit=80):
+                if msg.author.bot or not msg.attachments:
+                    continue
+                n_msg += 1
+                for att in msg.attachments:
+                    try:
+                        s = await process_attachment(msg, att)
+                        if s:
+                            summaries.append(s)
+                    except Exception as ex:
+                        sys.stderr.write("[rescan] %s\n" % ex)
+        except Exception as e:
+            sys.stderr.write("[rescan] salon: %s\n" % e)
+        return n_msg, summaries
+
+    class ConfirmResetView(discord.ui.View):
+        def __init__(self):
+            super().__init__(timeout=60)
+
+        @discord.ui.button(label="⚠️ Oui, tout effacer", style=discord.ButtonStyle.danger)
+        async def confirm(self, interaction, button):
+            reset_state()
+            await interaction.response.edit_message(
+                content="🧨 Remise à zéro effectuée : MoMo, NSIA, Bitget et patrimoine effacés.", view=None)
+
+        @discord.ui.button(label="Annuler", style=discord.ButtonStyle.secondary)
+        async def cancel(self, interaction, button):
+            await interaction.response.edit_message(content="Annulé — rien n'a été effacé.", view=None)
+
     class PanelView(discord.ui.View):
         def __init__(self):
             super().__init__(timeout=None)
@@ -823,6 +912,35 @@ if discord is not None:
                            style=discord.ButtonStyle.secondary, custom_id="nexus:status", row=1)
         async def b_status(self, interaction, button):
             await interaction.response.send_message(embed=build_status_embed(), ephemeral=True)
+
+        @discord.ui.button(label="Redémarrer (re-scan)", emoji="♻️",
+                           style=discord.ButtonStyle.primary, custom_id="nexus:rescan", row=2)
+        async def b_rescan(self, interaction, button):
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            try:
+                n_msg, _ = await rescan_import(interaction.client)
+                try:
+                    ov = await bitget_overview(HTTP_SESSION)
+                    if ov:
+                        STATE["bitget"] = {"total": ov["total"], "spot": ov["spot"], "earn": ov["earn"],
+                                           "others": ov["others"], "ts": int(time.time() * 1000),
+                                           "holdings": [{"coin": c, "amt": a, "val": v} for c, a, v in ov["holdings"]]}
+                        save_state()
+                except Exception:
+                    pass
+                inc, exp, net, cnt = _momo_totals()
+                await interaction.followup.send(
+                    "♻️ Re-scan terminé : %d message(s) relu(s). MoMo : %d opération(s) (net %s). Synchro relancée."
+                    % (n_msg, cnt, fmt_xof(net)), ephemeral=True)
+            except Exception as ex:
+                await interaction.followup.send("Erreur re-scan : %s" % ex, ephemeral=True)
+
+        @discord.ui.button(label="RESET (tout à 0)", emoji="🧨",
+                           style=discord.ButtonStyle.danger, custom_id="nexus:reset", row=2)
+        async def b_reset(self, interaction, button):
+            await interaction.response.send_message(
+                "⚠️ Confirmer la **remise à zéro de toutes tes données** (MoMo, NSIA, Bitget) ? Action irréversible.",
+                view=ConfirmResetView(), ephemeral=True)
 
     async def post_or_update_panel(client):
         if not PANEL_CHANNEL or not str(PANEL_CHANNEL).isdigit():
@@ -971,7 +1089,10 @@ async def run_discord(http_session):
                 emb.add_field(name="Solde MoMo cumulé (net)", value=fmt_xof(net), inline=True)
                 emb.add_field(name="Opérations enregistrées", value=str(cnt), inline=True)
                 emb.set_footer(text="Importé automatiquement sur ton dashboard")
-                await message.channel.send(embed=emb)
+                # Retour posté dans le salon de RAPPORTS (REPORT_CHANNEL), sinon dans le salon d'import
+                posted = await post_report(client, embed=emb)
+                if posted is None:
+                    await message.channel.send(embed=emb)
         except Exception as e:
             sys.stderr.write("[discord] on_message err: %s\n" % e)
 
