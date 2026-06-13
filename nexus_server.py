@@ -365,13 +365,18 @@ def parse_momo_statement(text):
                      "text": "MoMo %s #%s" % (typ, txid)})
     return rows
 
-def _emit_ops(parsed):
+def detect_network(text):
+    """Detecte l'operateur Mobile Money depuis le texte ('moov' ou 'mtn' par defaut)."""
+    return "moov" if re.search(r"moov", text or "", re.I) else "mtn"
+
+def _emit_ops(parsed, net="mtn"):
     """Transforme une liste d'operations analysees en entrees MoMo (+ frais separes)."""
     out = []
     base_ts = int(time.time() * 1000)
+    label = "Moov" if net == "moov" else "MoMo"
     for p in parsed:
         out.append({
-            "id": new_id(), "ts": base_ts,
+            "id": new_id(), "ts": base_ts, "net": net,
             "type": p["type"], "amount": p["amount"], "cur": "XOF",
             "payee": p.get("payee", ""), "ref": p.get("ref", ""), "date": p.get("date"),
             "balance": p.get("balance"), "text": (p.get("text") or "")[:180], "src": "discord",
@@ -379,24 +384,26 @@ def _emit_ops(parsed):
         if p.get("fee") and p["fee"] > 0:
             ref = p.get("ref", "")
             out.append({
-                "id": new_id(), "ts": base_ts,
+                "id": new_id(), "ts": base_ts, "net": net,
                 "type": "exp", "amount": p["fee"], "cur": "XOF",
-                "payee": "Frais MoMo", "ref": (ref + "_fee") if ref else "",
+                "payee": "Frais " + label, "ref": (ref + "_fee") if ref else "",
                 "date": p.get("date"), "balance": None,
                 "text": ("Frais — " + (p.get("text") or ""))[:180], "src": "discord",
             })
     return out
 
-def parse_momo_text(text):
-    """Analyse un texte MoMo. Essaie d'abord le format RELEVE officiel (tableau PDF),
+def parse_momo_text(text, net=None):
+    """Analyse un texte MoMo/Moov. Essaie d'abord le format RELEVE officiel (tableau PDF),
     sinon retombe sur l'analyse ligne-par-ligne (SMS / captures OCR)."""
     if not text:
         return []
+    if net is None:
+        net = detect_network(text)
     stmt = parse_momo_statement(text)
     if stmt:
-        return _emit_ops(stmt)
+        return _emit_ops(stmt, net)
     rows = [p for p in (_parse_line(r) for r in re.split(r"[\n\r]+", text)) if p]
-    return _emit_ops(rows)
+    return _emit_ops(rows, net)
 
 def _dedup_key(e):
     """Cle d'unicite : la reference si dispo, sinon (type, montant, libelle)."""
@@ -743,17 +750,12 @@ def _item_date(m):
     except Exception:
         return _wat_today()
 
-def momo_totals_period(period):
-    """('jour'|'semaine'|'mois') -> (entrees, sorties, net, nb) sur la periode (heure Benin)."""
+def momo_totals_period(days, net=None):
+    """Fenetre glissante de N jours -> (entrees, sorties, net, nb). net='mtn'|'moov'|None(tous)."""
     today = _wat_today()
+    start = today - datetime.timedelta(days=int(days) - 1)
     items = STATE.get("momo") or []
-    if period == "jour":
-        sel = [m for m in items if _item_date(m) == today]
-    elif period == "semaine":
-        start = today - datetime.timedelta(days=6)
-        sel = [m for m in items if _item_date(m) >= start]
-    else:  # mois (mois calendaire courant)
-        sel = [m for m in items if _item_date(m).year == today.year and _item_date(m).month == today.month]
+    sel = [m for m in items if _item_date(m) >= start and (net is None or m.get("net", "mtn") == net)]
     inc = sum(float(m.get("amount", 0) or 0) for m in sel if m.get("type") == "inc")
     exp = sum(float(m.get("amount", 0) or 0) for m in sel if m.get("type") == "exp")
     return inc, exp, inc - exp, len(sel)
@@ -900,13 +902,17 @@ if discord is not None:
         e.set_footer(text="NEXUS • serveur 24/7")
         return e
 
-    async def build_recap_embed(period):
-        titles = {"jour": "📅 Récap du jour", "semaine": "🗓️ Récap de la semaine", "mois": "📆 Récap du mois"}
-        e = discord.Embed(title=titles.get(period, "Récap"), color=GOLD)
-        inc, exp, net, cnt = momo_totals_period(period)
-        e.add_field(name="💸 Mobile Money",
+    async def build_recap_embed(days):
+        e = discord.Embed(title="📊 Rapport patrimoine — %d jours" % days, color=GOLD)
+        inc, exp, net, cnt = momo_totals_period(days)
+        mtn, moov = momo_totals_period(days, "mtn"), momo_totals_period(days, "moov")
+        e.add_field(name="💸 Mobile Money (%dj)" % days,
                     value="Entrées **%s**\nSorties **%s**\nNet **%s**\n%d opération(s)"
                           % (fmt_xof(inc), fmt_xof(exp), fmt_xof(net), cnt), inline=True)
+        if moov[3] or mtn[3]:
+            e.add_field(name="Par réseau",
+                        value="📱 MTN : net %s (%d)\n🟠 Moov : net %s (%d)"
+                              % (fmt_xof(mtn[2]), mtn[3], fmt_xof(moov[2]), moov[3]), inline=True)
         ns = STATE.get("nsia")
         if ns and ns.get("total"):
             extra = ("\nPV latente %s" % fmt_xof(ns["pv_latente"])) if ns.get("pv_latente") is not None else ""
@@ -920,31 +926,63 @@ if discord is not None:
                         % (fmt_usd(ov["total"]), fmt_usd(ov["spot"]), fmt_usd(ov["earn"])), inline=True)
         if PUBLIC_URL:
             e.add_field(name="🌐 Ton app", value=PUBLIC_URL + "/", inline=False)
-        e.set_footer(text="NEXUS • recap automatique")
+        e.set_footer(text="NEXUS • rapport automatique • fenêtre %d jours" % days)
         e.timestamp = discord.utils.utcnow()
         return e
 
+    class ReportActionView(discord.ui.View):
+        """Boutons ✅ Valider / ❌ Refuser attachés à chaque rapport posté."""
+        def __init__(self):
+            super().__init__(timeout=None)
+
+        @discord.ui.button(label="Valider", emoji="✅", style=discord.ButtonStyle.success, custom_id="nexus:rep_ok")
+        async def ok(self, interaction, button):
+            for c in self.children:
+                c.disabled = True
+            try:
+                await interaction.response.edit_message(view=self)
+            except Exception:
+                pass
+            try:
+                await interaction.followup.send("✅ Rapport validé.", ephemeral=True)
+            except Exception:
+                pass
+
+        @discord.ui.button(label="Refuser (ré-analyser)", emoji="❌", style=discord.ButtonStyle.danger, custom_id="nexus:rep_no")
+        async def no(self, interaction, button):
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            try:
+                n_msg, _ = await rescan_import(interaction.client)
+                await post_report(interaction.client, embed=await build_report_embed(), view=ReportActionView())
+                await interaction.followup.send(
+                    "❌ Refusé — j'ai re-scanné %d message(s) et posté un rapport à jour." % n_msg, ephemeral=True)
+            except Exception as ex:
+                await interaction.followup.send("Erreur ré-analyse : %s" % ex, ephemeral=True)
+
     async def recap_scheduler(client):
-        """Poste automatiquement les récaps jour/semaine/mois à 20h (heure Bénin) dans le salon de rapports."""
+        """Poste automatiquement des rapports glissants 7 / 14 / 30 jours à 20h (heure Bénin)."""
         await client.wait_until_ready()
         while not client.is_closed():
             try:
                 now = datetime.datetime.utcnow() + datetime.timedelta(hours=1)
-                keys = STATE.setdefault("recap_keys", {})
-                dkey, wkey, mkey = now.strftime("%Y-%m-%d"), now.strftime("%G-W%V"), now.strftime("%Y-%m")
                 if now.hour >= 20:
-                    if keys.get("daily") != dkey:
-                        await post_report(client, embed=await build_recap_embed("jour"))
-                        keys["daily"] = dkey; save_state()
-                    if now.weekday() == 0 and keys.get("weekly") != wkey:
-                        await post_report(client, embed=await build_recap_embed("semaine"))
-                        keys["weekly"] = wkey; save_state()
-                    if now.day == 1 and keys.get("monthly") != mkey:
-                        await post_report(client, embed=await build_recap_embed("mois"))
-                        keys["monthly"] = mkey; save_state()
+                    keys = STATE.setdefault("recap_keys", {})
+                    today = now.date()
+                    for days in (7, 14, 30):
+                        k = "d%d" % days
+                        lastd = None
+                        if keys.get(k):
+                            try:
+                                lastd = datetime.date.fromisoformat(keys[k])
+                            except Exception:
+                                lastd = None
+                        if lastd is None or (today - lastd).days >= days:
+                            await post_report(client, embed=await build_recap_embed(days), view=ReportActionView())
+                            keys[k] = today.isoformat()
+                            save_state()
             except Exception as e:
                 sys.stderr.write("[recap] %s\n" % e)
-            await asyncio.sleep(1800)  # vérifie toutes les 30 min
+            await asyncio.sleep(3600)  # vérifie toutes les heures
 
     async def post_report(client, embed=None, content=None, view=None):
         """Envoie un message dans le salon des RETOURS (REPORT_CHANNEL), sinon le panneau."""
@@ -1006,7 +1044,12 @@ if discord is not None:
         async def b_report(self, interaction, button):
             await interaction.response.defer(ephemeral=True, thinking=True)
             try:
-                await interaction.followup.send(embed=await build_report_embed(), ephemeral=True)
+                emb = await build_report_embed()
+                posted = await post_report(interaction.client, embed=emb, view=ReportActionView())
+                if posted is None:
+                    await interaction.followup.send(embed=emb, ephemeral=True)
+                else:
+                    await interaction.followup.send("📊 Rapport complet posté dans le salon de rapports.", ephemeral=True)
             except Exception as ex:
                 await interaction.followup.send("Erreur rapport : %s" % ex, ephemeral=True)
 
@@ -1090,26 +1133,33 @@ if discord is not None:
                 "⚠️ Confirmer la **remise à zéro de toutes tes données** (MoMo, NSIA, Bitget) ? Action irréversible.",
                 view=ConfirmResetView(), ephemeral=True)
 
-        @discord.ui.button(label="Récap jour", emoji="📅",
-                           style=discord.ButtonStyle.success, custom_id="nexus:recap_d", row=3)
-        async def b_recap_d(self, interaction, button):
+        @discord.ui.button(label="Rapport 7j", emoji="📅",
+                           style=discord.ButtonStyle.success, custom_id="nexus:recap_7", row=3)
+        async def b_recap_7(self, interaction, button):
             await interaction.response.defer(ephemeral=True, thinking=True)
-            await post_report(interaction.client, embed=await build_recap_embed("jour"))
-            await interaction.followup.send("📅 Récap du jour posté dans le salon de rapports.", ephemeral=True)
+            await post_report(interaction.client, embed=await build_recap_embed(7), view=ReportActionView())
+            await interaction.followup.send("📅 Rapport 7 jours posté dans le salon de rapports.", ephemeral=True)
 
-        @discord.ui.button(label="Récap semaine", emoji="🗓️",
-                           style=discord.ButtonStyle.success, custom_id="nexus:recap_w", row=3)
-        async def b_recap_w(self, interaction, button):
+        @discord.ui.button(label="Rapport 14j", emoji="🗓️",
+                           style=discord.ButtonStyle.success, custom_id="nexus:recap_14", row=3)
+        async def b_recap_14(self, interaction, button):
             await interaction.response.defer(ephemeral=True, thinking=True)
-            await post_report(interaction.client, embed=await build_recap_embed("semaine"))
-            await interaction.followup.send("🗓️ Récap de la semaine posté dans le salon de rapports.", ephemeral=True)
+            await post_report(interaction.client, embed=await build_recap_embed(14), view=ReportActionView())
+            await interaction.followup.send("🗓️ Rapport 14 jours posté dans le salon de rapports.", ephemeral=True)
 
-        @discord.ui.button(label="Récap mois", emoji="📆",
-                           style=discord.ButtonStyle.success, custom_id="nexus:recap_m", row=3)
-        async def b_recap_m(self, interaction, button):
+        @discord.ui.button(label="Rapport 30j", emoji="📆",
+                           style=discord.ButtonStyle.success, custom_id="nexus:recap_30", row=3)
+        async def b_recap_30(self, interaction, button):
             await interaction.response.defer(ephemeral=True, thinking=True)
-            await post_report(interaction.client, embed=await build_recap_embed("mois"))
-            await interaction.followup.send("📆 Récap du mois posté dans le salon de rapports.", ephemeral=True)
+            await post_report(interaction.client, embed=await build_recap_embed(30), view=ReportActionView())
+            await interaction.followup.send("📆 Rapport 30 jours posté dans le salon de rapports.", ephemeral=True)
+
+        @discord.ui.button(label="Lien du site", emoji="🔗",
+                           style=discord.ButtonStyle.secondary, custom_id="nexus:link", row=2)
+        async def b_link(self, interaction, button):
+            url = (PUBLIC_URL or "") + "/" if PUBLIC_URL else "(PUBLIC_URL non configuré)"
+            await interaction.response.send_message(
+                "🔗 **Ton tableau de bord** (clique ou copie) :\n%s" % url, ephemeral=True)
 
     async def post_or_update_panel(client):
         if not PANEL_CHANNEL or not str(PANEL_CHANNEL).isdigit():
@@ -1207,6 +1257,7 @@ async def run_discord(http_session):
               % (client.user, import_chan_id, PANEL_CHANNEL or "—"))
         try:
             client.add_view(PanelView())  # rend les boutons persistants apres redemarrage
+            client.add_view(ReportActionView())  # boutons ✅/❌ des rapports persistants
         except Exception as e:
             sys.stderr.write("[discord] add_view: %s\n" % e)
         # Synchronise les slash-commands (rapide si on cible la guilde)
@@ -1263,8 +1314,8 @@ async def run_discord(http_session):
                 emb.add_field(name="Solde MoMo cumulé (net)", value=fmt_xof(net), inline=True)
                 emb.add_field(name="Opérations enregistrées", value=str(cnt), inline=True)
                 emb.set_footer(text="Importé automatiquement sur ton dashboard")
-                # Retour posté dans le salon de RAPPORTS (REPORT_CHANNEL), sinon dans le salon d'import
-                posted = await post_report(client, embed=emb)
+                # Retour posté dans le salon de RAPPORTS (REPORT_CHANNEL) avec boutons ✅/❌
+                posted = await post_report(client, embed=emb, view=ReportActionView())
                 if posted is None:
                     await message.channel.send(embed=emb)
         except Exception as e:
