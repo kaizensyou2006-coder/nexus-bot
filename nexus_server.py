@@ -70,6 +70,7 @@ BITGET_SECRET   = _conf("BITGET_SECRET")
 BITGET_PASS     = _conf("BITGET_PASS")
 OCR_API_KEY     = _conf("OCR_API_KEY")
 PORT            = int(_conf("PORT") or os.environ.get("SERVER_PORT") or "8080")
+USD_XOF         = float(_conf("USD_XOF") or "640")   # taux approx USD->FCFA pour le total consolide
 BITGET_BASE     = "https://api.bitget.com"
 
 # Session HTTP partagee (definie au demarrage) — utilisee par le bot Discord pour Bitget/OCR.
@@ -789,63 +790,133 @@ def momo_totals_period(days, net=None):
     exp = sum(float(m.get("amount", 0) or 0) for m in sel if m.get("type") == "exp")
     return inc, exp, inc - exp, len(sel)
 
+def momo_balance_by_net():
+    """Solde par reseau : net des transactions si presentes, sinon solde capture."""
+    momo = STATE.get("momo") or []
+    nets = {}
+    for m in momo:
+        n = m.get("net", "mtn")
+        a = float(m.get("amount", 0) or 0)
+        nets[n] = nets.get(n, 0.0) + (a if m.get("type") == "inc" else -a)
+    bal = dict(STATE.get("balances") or {})
+    out = {}
+    for n in set(list(nets.keys()) + list(bal.keys())):
+        out[n] = nets[n] if n in nets else bal.get(n, 0.0)
+    return out
+
+def consolidated_total():
+    """Patrimoine total combine en FCFA + le detail par poste."""
+    bynet = momo_balance_by_net()
+    momo_tot = sum(bynet.values())
+    nsia = float((STATE.get("nsia") or {}).get("total", 0) or 0)
+    bg_usd = float((STATE.get("bitget") or {}).get("total", 0) or 0)
+    bg_xof = bg_usd * USD_XOF
+    total = momo_tot + nsia + bg_xof
+    return {"total": total, "momo": momo_tot, "bynet": bynet,
+            "nsia": nsia, "bitget_usd": bg_usd, "bitget_xof": bg_xof}
+
 def _ascii(s):
     """Nettoie pour le PDF (police latin-1)."""
     return (str(s or "")).encode("latin-1", "replace").decode("latin-1")
 
 def build_pdf_report(days=30):
-    """Genere un rapport patrimoine PDF detaille (octets)."""
+    """Genere un rapport patrimoine PDF stylise avec graphiques (octets)."""
     from fpdf import FPDF
+    GOLD, GREEN, RED = (201, 162, 39), (22, 163, 74), (220, 38, 38)
+    PURPLE, AMBER, DARK, GREY, LIGHT = (124, 58, 237), (245, 158, 11), (24, 24, 34), (120, 120, 140), (244, 244, 248)
     pdf = FPDF()
-    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.set_auto_page_break(auto=True, margin=14)
     pdf.add_page()
-    pdf.set_font("Helvetica", "B", 16)
-    pdf.cell(0, 10, "NEXUS - Rapport patrimoine", ln=1)
-    pdf.set_font("Helvetica", "", 9)
-    pdf.cell(0, 5, _ascii("Fenetre : %d jours - genere automatiquement" % days), ln=1)
-    pdf.ln(2)
-    # --- Mobile Money ---
+    W, M = 210, 12
+    CW = W - 2 * M
+    c = consolidated_total()
     inc, exp, net, cnt = momo_totals_period(days)
     mtn, moov = momo_totals_period(days, "mtn"), momo_totals_period(days, "moov")
-    pdf.set_font("Helvetica", "B", 12); pdf.cell(0, 8, "Mobile Money", ln=1)
-    pdf.set_font("Helvetica", "", 10)
-    pdf.cell(0, 6, _ascii("Entrees: %s   Sorties: %s   Net: %s   (%d op.)" % (fmt_xof(inc), fmt_xof(exp), fmt_xof(net), cnt)), ln=1)
-    pdf.cell(0, 6, _ascii("MTN net: %s (%d op.)   Moov net: %s (%d op.)" % (fmt_xof(mtn[2]), mtn[3], fmt_xof(moov[2]), moov[3])), ln=1)
-    # --- NSIA ---
+
+    def txt(x, y, s, size=9, style="", color=DARK):
+        pdf.set_xy(x, y); pdf.set_font("Helvetica", style, size); pdf.set_text_color(*color)
+        pdf.cell(0, 5, _ascii(s))
+
+    # ---- Bandeau titre ----
+    pdf.set_fill_color(*GOLD); pdf.rect(0, 0, W, 26, "F")
+    txt(M, 6, "NEXUS  -  Rapport patrimoine", 20, "B", (255, 255, 255))
+    txt(M, 17, "Fenetre %d jours  -  genere automatiquement" % days, 9, "", (255, 255, 255))
+    # ---- Total consolide ----
+    txt(M, 31, "PATRIMOINE TOTAL CONSOLIDE", 9, "", GREY)
+    txt(M, 37, fmt_xof(c["total"]), 24, "B", DARK)
+    # ---- Cartes KPI ----
+    y, cw, ch = 53, (CW - 12) / 4, 22
+    cards = [("Mobile Money", fmt_xof(c["momo"]), GREEN), ("NSIA", fmt_xof(c["nsia"]), PURPLE),
+             ("Bitget", fmt_usd(c["bitget_usd"]), AMBER), ("Bitget en FCFA", fmt_xof(c["bitget_xof"]), GREY)]
+    x = M
+    for lbl, val, col in cards:
+        pdf.set_fill_color(*LIGHT); pdf.rect(x, y, cw, ch, "F")
+        pdf.set_fill_color(*col); pdf.rect(x, y, cw, 3, "F")
+        txt(x + 3, y + 6, lbl, 7.5, "", GREY)
+        txt(x + 3, y + 12, val, 11, "B", DARK)
+        x += cw + 4
+    # ---- Flux MoMo (barres) ----
+    y = 82
+    txt(M, y, "Flux Mobile Money (%d jours)" % days, 12, "B", DARK); y += 9
+    mxv = max(inc, exp, 1); barmax = CW - 64
+    for lbl, val, col in [("Entrees", inc, GREEN), ("Sorties", exp, RED)]:
+        txt(M, y, lbl, 9, "", DARK)
+        bw = max(barmax * (val / mxv), 0.6)
+        pdf.set_fill_color(*col); pdf.rect(M + 24, y + 0.5, bw, 5, "F")
+        txt(M + 26 + bw, y, fmt_xof(val), 8, "", GREY)
+        y += 8
+    txt(M, y, "Net : %s   (%d operations)" % (fmt_xof(net), cnt), 9, "B", GREEN if net >= 0 else RED); y += 12
+    # ---- Repartition (barre empilee) ----
+    txt(M, y, "Repartition du patrimoine", 12, "B", DARK); y += 9
+    parts = [("Mobile Money", max(c["momo"], 0), GREEN), ("NSIA", max(c["nsia"], 0), PURPLE),
+             ("Bitget", max(c["bitget_xof"], 0), AMBER)]
+    tot = sum(p[1] for p in parts) or 1
+    x = M
+    for lbl, val, col in parts:
+        w = CW * (val / tot)
+        if w > 0.3:
+            pdf.set_fill_color(*col); pdf.rect(x, y, w, 7, "F"); x += w
+    y += 11
+    for lbl, val, col in parts:
+        pdf.set_fill_color(*col); pdf.rect(M, y + 0.5, 4, 4, "F")
+        txt(M + 6, y, "%s : %s  (%.1f%%)" % (lbl, fmt_xof(val), val / tot * 100), 8.5, "", DARK)
+        y += 6
+    pdf.set_y(y + 2)
+    # ---- NSIA ----
     ns = STATE.get("nsia")
     if ns and ns.get("total"):
-        pdf.ln(2); pdf.set_font("Helvetica", "B", 12); pdf.cell(0, 8, "NSIA (OPCVM)", ln=1)
-        pdf.set_font("Helvetica", "", 10)
-        pdf.cell(0, 6, _ascii("Valorisation: %s" % fmt_xof(ns["total"])), ln=1)
-        if ns.get("pv_latente") is not None:
-            pdf.cell(0, 6, _ascii("Plus-value latente: %s" % fmt_xof(ns["pv_latente"])), ln=1)
-        if ns.get("invested"):
-            pdf.cell(0, 6, _ascii("Investi net: %s" % fmt_xof(ns["invested"])), ln=1)
-        if ns.get("pv_realisee"):
-            pdf.cell(0, 6, _ascii("Plus-value realisee: %s" % fmt_xof(ns["pv_realisee"])), ln=1)
-        for o in (ns.get("operations") or [])[-15:]:
-            pdf.cell(0, 5, _ascii("   %s  %s  %s%s" % (o.get("date", ""), o.get("label", ""), fmt_xof(o.get("montant", 0)),
-                                                       ("  (pv " + fmt_xof(o["pv"]) + ")") if o.get("pv") else "")), ln=1)
-    # --- Bitget (dernier sync stocke) ---
+        pdf.set_x(M); pdf.set_font("Helvetica", "B", 12); pdf.set_text_color(*PURPLE); pdf.cell(0, 7, "NSIA (OPCVM)", ln=1)
+        line = "Valorisation %s" % fmt_xof(ns["total"])
+        if ns.get("pv_latente") is not None: line += "   |   PV latente %s" % fmt_xof(ns["pv_latente"])
+        if ns.get("invested"): line += "   |   Investi %s" % fmt_xof(ns["invested"])
+        if ns.get("pv_realisee"): line += "   |   PV realisee %s" % fmt_xof(ns["pv_realisee"])
+        pdf.set_x(M); pdf.set_font("Helvetica", "", 9.5); pdf.set_text_color(*DARK); pdf.cell(0, 5, _ascii(line), ln=1)
+        pdf.set_font("Helvetica", "", 8); pdf.set_text_color(*GREY)
+        for o in (ns.get("operations") or [])[-12:]:
+            pdf.set_x(M); pdf.cell(0, 4.5, _ascii("  %s  %s  %s%s" % (o.get("date", ""), o.get("label", ""),
+                fmt_xof(o.get("montant", 0)), ("  (pv " + fmt_xof(o["pv"]) + ")") if o.get("pv") else "")), ln=1)
+    # ---- Bitget ----
     bg = STATE.get("bitget")
     if bg and bg.get("total"):
-        pdf.ln(2); pdf.set_font("Helvetica", "B", 12); pdf.cell(0, 8, "Bitget", ln=1)
-        pdf.set_font("Helvetica", "", 10)
-        pdf.cell(0, 6, _ascii("Total: %s   Spot: %s   Earn: %s" % (fmt_usd(bg["total"]), fmt_usd(bg.get("spot", 0)), fmt_usd(bg.get("earn", 0)))), ln=1)
-        for h in (bg.get("holdings") or [])[:12]:
+        pdf.ln(2); pdf.set_x(M); pdf.set_font("Helvetica", "B", 12); pdf.set_text_color(*AMBER); pdf.cell(0, 7, "Bitget", ln=1)
+        pdf.set_x(M); pdf.set_font("Helvetica", "", 9.5); pdf.set_text_color(*DARK)
+        pdf.cell(0, 5, _ascii("Total %s   Spot %s   Earn %s" % (fmt_usd(bg["total"]), fmt_usd(bg.get("spot", 0)), fmt_usd(bg.get("earn", 0)))), ln=1)
+        pdf.set_font("Helvetica", "", 8); pdf.set_text_color(*GREY)
+        for h in (bg.get("holdings") or [])[:10]:
             if h.get("val", 0) > 0.01:
-                pdf.cell(0, 5, _ascii("   %s : %s" % (h.get("coin", ""), fmt_usd(h.get("val", 0)))), ln=1)
-    # --- Dernieres operations MoMo ---
+                pdf.set_x(M); pdf.cell(0, 4.5, _ascii("  %s : %s" % (h.get("coin", ""), fmt_usd(h.get("val", 0)))), ln=1)
+    # ---- Dernieres operations ----
     momo = STATE.get("momo") or []
     if momo:
-        pdf.ln(2); pdf.set_font("Helvetica", "B", 12); pdf.cell(0, 8, "Dernieres operations Mobile Money", ln=1)
-        pdf.set_font("Helvetica", "", 8)
-        for mop in momo[-45:][::-1]:
-            sign = "+" if mop.get("type") == "inc" else "-"
-            pdf.cell(0, 5, _ascii("%s %s  [%s]  %s" % (sign, fmt_xof(mop.get("amount", 0)),
-                                                       (mop.get("net", "mtn") or "").upper(), (mop.get("payee") or mop.get("text") or "")[:55])), ln=1)
-    out = pdf.output()
-    return bytes(out)
+        pdf.ln(2); pdf.set_x(M); pdf.set_font("Helvetica", "B", 12); pdf.set_text_color(*DARK)
+        pdf.cell(0, 7, "Dernieres operations Mobile Money", ln=1)
+        pdf.set_font("Helvetica", "", 7.5)
+        for mop in momo[-40:][::-1]:
+            inc_ = mop.get("type") == "inc"
+            pdf.set_text_color(*(GREEN if inc_ else RED)); pdf.set_x(M)
+            pdf.cell(0, 4.3, _ascii("%s %s  [%s]  %s" % ("+" if inc_ else "-", fmt_xof(mop.get("amount", 0)),
+                (mop.get("net", "mtn") or "").upper(), (mop.get("payee") or mop.get("text") or "")[:55])), ln=1)
+    return bytes(pdf.output())
 
 def clean_duplicates():
     momo = STATE.get("momo") or []
@@ -895,6 +966,8 @@ if discord is not None:
             save_state()
         if STATE.get("patrimoine"):
             e.add_field(name="🗂 Patrimoine (app)", value="Synchronisé depuis l'app ✅", inline=False)
+        c = consolidated_total()
+        e.description = "💰 **Patrimoine total consolidé ≈ %s**\n*(MoMo + NSIA + Bitget)*" % fmt_xof(c["total"])
         e.set_footer(text="NEXUS • holding & finance")
         e.timestamp = discord.utils.utcnow()
         return e
@@ -1011,6 +1084,12 @@ if discord is not None:
         if ov:
             e.add_field(name="📈 Bitget", value="**%s**\nSpot %s · Earn %s"
                         % (fmt_usd(ov["total"]), fmt_usd(ov["spot"]), fmt_usd(ov["earn"])), inline=True)
+            STATE["bitget"] = {"total": ov["total"], "spot": ov["spot"], "earn": ov["earn"],
+                               "others": ov["others"], "ts": int(time.time() * 1000),
+                               "holdings": [{"coin": c2, "amt": a2, "val": v2} for c2, a2, v2 in ov["holdings"]]}
+            save_state()
+        c = consolidated_total()
+        e.description = "💰 **Patrimoine total consolidé ≈ %s**" % fmt_xof(c["total"])
         if PUBLIC_URL:
             e.add_field(name="🌐 Ton app", value=PUBLIC_URL + "/", inline=False)
         e.set_footer(text="NEXUS • rapport automatique • fenêtre %d jours" % days)
