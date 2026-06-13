@@ -444,37 +444,90 @@ def momo_ingest_text(text, src="sms"):
     return n
 
 # ----------------------- NSIA : releve de portefeuille -----------------------
+# Un nombre europeen complet : "218 248,59", "9 163,1487", "210,26" (milliers = espace).
+_NUM = re.compile(r"\d{1,3}(?:[ \u202f\u00a0]\d{3})*,\d+|\d+,\d+")
+
+def _eur(s):
+    """'218 248,59' -> 218248.59 (format europeen : espace=milliers, virgule=decimale)."""
+    s = re.sub(r"[ \u202f\u00a0]", "", (s or "").strip())
+    if "," in s:
+        s = s.replace(".", "").replace(",", ".")
+    try:
+        return float(re.sub(r"[^\d.]", "", s) or 0)
+    except Exception:
+        return 0.0
+
+def _montants(s):
+    """Nombres a EXACTEMENT 2 decimales = montants (exclut VL/quantites a 4 decimales)."""
+    out = []
+    for m in _NUM.finditer(s or ""):
+        tok = m.group()
+        if len(tok.split(",")[1]) == 2:
+            v = _eur(tok)
+            if v > 0:
+                out.append(v)
+    return out
+
 def parse_nsia(text):
     if not text:
         return None
     low = text.lower()
-    if not any(k in low for k in ("nsia", "opcvm", "portefeuille", "aurore", "fonds", "fcp", "valeur liquidative")):
+    if not any(k in low for k in ("nsia", "opcvm", "portefeuille", "aurore", "fonds",
+                                  "fcp", "valeur liquidative", "souscription", "rachat", "valorisation")):
         return None
-    def amt(s):
-        s2 = re.sub(r"[ .\u202f\u00a0](?=\d{3})", "", s)
-        s2 = re.split(r"[.,]", s2)[0]
-        d = re.sub(r"[^\d]", "", s2)
-        return float(d) if d else 0
-    money_re = r"\d{1,3}(?:[ .\u202f\u00a0]\d{3})+(?:[.,]\d+)?"
-    best = None
-    # 1) priorite aux lignes "valeur" / "total portefeuille"
-    for line in re.split(r"[\n\r]+", text):
-        ll = line.lower()
-        if "valeur" in ll or ("total" in ll and "portefeuille" in ll):
-            for sm in re.findall(money_re, line):
-                a = amt(sm)
-                if 10000 <= a <= 5000000000:
-                    best = a
-    # 2) sinon, plus gros montant formate du document
-    if not best:
-        cands = [amt(sm) for sm in re.findall(money_re, text)]
-        cands = [c for c in cands if 10000 <= c <= 5000000000]
-        if cands:
-            best = max(cands)
-    if best and best > 0:
-        return {"source": "nsia", "total": best, "cur": "XOF",
-                "ts": int(time.time() * 1000), "text": "NSIA - Releve de Portefeuille"}
-    return None
+    lines = re.split(r"[\n\r]+", text)
+    valorisation = pv_latente = prix_revient = None
+    # 1) Ligne "Total portefeuille" (ou la ligne de position) -> valorisation + plus-value latente
+    total_line = None
+    for ln in lines:
+        if "total portefeuille" in ln.lower():
+            total_line = ln
+            break
+    if total_line is None:
+        for ln in lines:
+            if ("aurore" in ln.lower() or "opcvm" in ln.lower()) and re.search(r"\d{2}-\d{2}-\d{4}", ln):
+                total_line = ln
+                break
+    if total_line:
+        vals = _montants(total_line)
+        if vals:
+            valorisation = vals[0]
+            if len(vals) >= 3:
+                prix_revient, pv_latente = vals[-2], vals[-1]
+            elif len(vals) == 2:
+                pv_latente = vals[-1]
+    # Fallback : plus gros montant 2-decimales du document
+    if not valorisation:
+        allv = [v for v in _montants(text) if 1000 <= v <= 5_000_000_000]
+        if allv:
+            valorisation = max(allv)
+    # 2) Historique des operations (Souscription / Rachat)
+    ops = []
+    for ln in lines:
+        dm = re.search(r"(\d{2})-(\d{2})-(\d{4})", ln)
+        ll = ln.lower()
+        sens = "Souscription" if "souscription" in ll else ("Rachat" if "rachat" in ll else None)
+        if not (dm and sens):
+            continue
+        money2 = _montants(ln)
+        if not money2:
+            continue
+        montant = money2[0]
+        pv = money2[1] if len(money2) > 1 else 0.0
+        d, mo, y = dm.groups()
+        ops.append({"date": "%s-%s-%s" % (y, mo, d), "label": sens,
+                    "sens": ("inc" if sens == "Souscription" else "exp"),
+                    "montant": montant, "pv": pv})
+    if not valorisation and not ops:
+        return None
+    invested = (sum(o["montant"] for o in ops if o["sens"] == "inc")
+                - sum(o["montant"] for o in ops if o["sens"] == "exp")) if ops else None
+    pv_realisee = sum(o["pv"] for o in ops) if ops else None
+    return {"source": "nsia", "total": valorisation or 0, "cur": "XOF",
+            "pv_latente": pv_latente, "prix_revient": prix_revient,
+            "invested": invested, "pv_realisee": pv_realisee,
+            "operations": ops[-60:], "ts": int(time.time() * 1000),
+            "text": "NSIA - Releve de Portefeuille"}
 
 def set_nsia(obj):
     if not obj:
@@ -626,12 +679,12 @@ async def h_app(request):
         p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "PATRIMOINE_OS.html")
         with open(p, "rb") as f:
             data = f.read()
-        # Ouvrir http://SERVEUR/?token=LE_TOKEN configure l'app toute seule
-        # (URL du serveur + token enregistres dans le navigateur, puis token retire de la barre d'adresse).
-        if AUTH_TOKEN and request.query.get("token", "") == AUTH_TOKEN:
+        # Le serveur sert SA propre app : il injecte TOUJOURS l'URL + le token,
+        # pour que ça marche sur tout appareil (PC, téléphone) sans saisir de token.
+        if AUTH_TOKEN:
             boot = ("<script>try{localStorage.setItem('nexus_srv_url',location.origin);"
                     "localStorage.setItem('nexus_srv_token',%s);"
-                    "history.replaceState(null,'',location.pathname);}catch(e){}</script>"
+                    "if(location.search.indexOf('token=')>=0)history.replaceState(null,'',location.pathname);}catch(e){}</script>"
                     % json.dumps(AUTH_TOKEN)).encode("utf-8")
             data = data.replace(b"<head>", b"<head>" + boot, 1)
         return web.Response(body=data, content_type="text/html", charset="utf-8")
@@ -748,9 +801,26 @@ if discord is not None:
         ns = STATE.get("nsia")
         if not ns or not ns.get("total"):
             e.description = "Aucun relevé NSIA reçu. Dépose ton relevé (PDF/image) dans le salon d'import."
-        else:
-            e.add_field(name="Valeur totale", value="**%s**" % fmt_xof(ns["total"]), inline=True)
-            e.add_field(name="Mise à jour", value="<t:%d:R>" % int(ns.get("ts", 0) / 1000), inline=True)
+            return e
+        e.add_field(name="Valorisation", value="**%s**" % fmt_xof(ns["total"]), inline=True)
+        if ns.get("pv_latente") is not None:
+            pvl = ns["pv_latente"]
+            e.add_field(name="Plus-value latente",
+                        value="%s **%s**" % ("🟢" if pvl >= 0 else "🔴", fmt_xof(pvl)), inline=True)
+        if ns.get("invested"):
+            e.add_field(name="Investi (net)", value=fmt_xof(ns["invested"]), inline=True)
+        if ns.get("pv_realisee"):
+            e.add_field(name="Plus-value réalisée", value=fmt_xof(ns["pv_realisee"]), inline=True)
+        ops = ns.get("operations") or []
+        if ops:
+            lines = []
+            for o in ops[-8:][::-1]:
+                sign = "➕" if o.get("sens") == "inc" else "➖"
+                extra = (" · +%s pv" % fmt_xof(o["pv"])) if o.get("pv") else ""
+                lines.append("%s %s **%s**%s" % (sign, o.get("date", ""), fmt_xof(o.get("montant", 0)), extra))
+            e.add_field(name="Évolution (dernières opérations)",
+                        value=("\n".join(lines))[:1024], inline=False)
+        e.add_field(name="Mise à jour", value="<t:%d:R>" % int(ns.get("ts", 0) / 1000), inline=False)
         return e
 
     async def build_bitget_embed():
