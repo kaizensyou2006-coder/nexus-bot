@@ -1,6 +1,7 @@
 # Secrets & état — JAMAIS sur GitHub
 nexus_config.json
 nexus_state.json
+render.env
 momo_*.json
 
 # Archives & artefacts locaux

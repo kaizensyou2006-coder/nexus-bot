@@ -265,34 +265,74 @@ def _parse_line(line):
         "payee": payee, "ref": ref, "date": date, "text": l[:180],
     }
 
-def parse_momo_text(text):
-    """Analyse un texte (SMS, OCR de capture, page PDF) -> liste d'operations.
-    Chaque ligne contenant une operation devient une entree ; les frais sont
-    emis comme une depense separee pour etre comptabilises au dashboard."""
-    out = []
-    if not text:
-        return out
-    for raw in re.split(r"[\n\r]+", text):
-        p = _parse_line(raw)
-        if not p:
+# --- Releve MTN MoMo officiel (PDF tableau "Détails de la transaction") ---
+MONTHS_FR = {"janvier": 1, "février": 2, "fevrier": 2, "mars": 3, "avril": 4,
+             "mai": 5, "juin": 6, "juillet": 7, "août": 8, "aout": 8,
+             "septembre": 9, "octobre": 10, "novembre": 11, "décembre": 12, "decembre": 12}
+_DATE_RE = re.compile(
+    r"(\d{1,2})\s+(janvier|février|fevrier|mars|avril|mai|juin|juillet|août|aout|"
+    r"septembre|octobre|novembre|décembre|decembre)\s+(\d{4})\s+(\d{1,2}):(\d{2})", re.I)
+# Une ligne d'operation = montant SIGNE, ID de transaction (10-12 chiffres), frais ... FCFA
+_TX_RE = re.compile(r"([+-]\d+)\s+(\d{10,12})\s+(\d[\d ]*?)\s*FCFA", re.I)
+
+def parse_momo_statement(text):
+    """Releve MTN MoMo : le signe du montant donne le sens (- depense, + revenu),
+    l'ID de transaction sert de cle anti-doublon. Renvoie une liste de dicts."""
+    rows = []
+    for m in _TX_RE.finditer(text):
+        amt_raw, txid, fee_raw = m.groups()
+        amount = _money(amt_raw)
+        if amount < 1:
             continue
-        base_ts = int(time.time() * 1000)
-        op = {
+        typ = "inc" if amt_raw.strip()[0] == "+" else "exp"
+        fee = _money(fee_raw)
+        before = text[:m.start()]
+        dm = None
+        for x in _DATE_RE.finditer(before):
+            dm = x  # garde la derniere date avant l'operation
+        date = None
+        if dm:
+            d, mois, y, _hh, _mn = dm.groups()
+            mo = MONTHS_FR.get(mois.lower())
+            if mo:
+                date = "%04d-%02d-%02d" % (int(y), mo, int(d))
+        rows.append({"type": typ, "amount": amount, "fee": fee, "balance": None,
+                     "payee": "", "ref": txid, "date": date,
+                     "text": "MoMo %s #%s" % (typ, txid)})
+    return rows
+
+def _emit_ops(parsed):
+    """Transforme une liste d'operations analysees en entrees MoMo (+ frais separes)."""
+    out = []
+    base_ts = int(time.time() * 1000)
+    for p in parsed:
+        out.append({
             "id": new_id(), "ts": base_ts,
             "type": p["type"], "amount": p["amount"], "cur": "XOF",
-            "payee": p["payee"], "ref": p["ref"], "date": p["date"],
-            "balance": p["balance"], "text": p["text"], "src": "discord",
-        }
-        out.append(op)
-        if p["fee"] and p["fee"] > 0:
+            "payee": p.get("payee", ""), "ref": p.get("ref", ""), "date": p.get("date"),
+            "balance": p.get("balance"), "text": (p.get("text") or "")[:180], "src": "discord",
+        })
+        if p.get("fee") and p["fee"] > 0:
+            ref = p.get("ref", "")
             out.append({
                 "id": new_id(), "ts": base_ts,
                 "type": "exp", "amount": p["fee"], "cur": "XOF",
-                "payee": "Frais MoMo", "ref": (p["ref"] + "_fee") if p["ref"] else "",
-                "date": p["date"], "balance": None,
-                "text": ("Frais — " + p["text"])[:180], "src": "discord",
+                "payee": "Frais MoMo", "ref": (ref + "_fee") if ref else "",
+                "date": p.get("date"), "balance": None,
+                "text": ("Frais — " + (p.get("text") or ""))[:180], "src": "discord",
             })
     return out
+
+def parse_momo_text(text):
+    """Analyse un texte MoMo. Essaie d'abord le format RELEVE officiel (tableau PDF),
+    sinon retombe sur l'analyse ligne-par-ligne (SMS / captures OCR)."""
+    if not text:
+        return []
+    stmt = parse_momo_statement(text)
+    if stmt:
+        return _emit_ops(stmt)
+    rows = [p for p in (_parse_line(r) for r in re.split(r"[\n\r]+", text)) if p]
+    return _emit_ops(rows)
 
 def _dedup_key(e):
     """Cle d'unicite : la reference si dispo, sinon (type, montant, libelle)."""

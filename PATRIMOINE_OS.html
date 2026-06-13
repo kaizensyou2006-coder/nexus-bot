@@ -1106,8 +1106,9 @@ async function bgFetch(path,params={}){
   throw new Error(lastErr.message+' — Vérifiez votre connexion et que les clés sont correctes');
 }
 // BITGET SYNC
+function bgReady(){return !!((BITGET.apiKey&&BITGET.secretKey&&BITGET.passphrase)||(typeof nexusSrv==='function'&&nexusSrv()));}
 async function syncBitget(){
-  if(!BITGET.apiKey||!BITGET.secretKey||!BITGET.passphrase){toast('Configurez vos clés Bitget dans Paramètres','err');go('settings');return;}
+  if(!bgReady()){toast('Configurez vos clés Bitget (ou le serveur NEXUS) dans Paramètres','err');go('settings');return;}
   const btn=document.getElementById('bg-sync-btn');
   if(btn){btn.disabled=true;btn.innerHTML='⟳ Sync...';}
   const st=document.getElementById('bg-sync-status');
@@ -1207,7 +1208,9 @@ function saveBGKeys(){BITGET.apiKey=(document.getElementById('cf-bg-key')?.value
 function renderBGSettings(){const sv=(id,v)=>{const e=document.getElementById(id);if(e)e.value=v||'';};sv('cf-bg-key',BITGET.apiKey);sv('cf-bg-secret',BITGET.secretKey);sv('cf-bg-pass',BITGET.passphrase);}
 // RENDER BITGET VIEW
 function renderBitget(){
-  const hasKeys=BITGET.apiKey&&BITGET.secretKey&&BITGET.passphrase;
+  const hasLocalKeys=BITGET.apiKey&&BITGET.secretKey&&BITGET.passphrase;
+  const srvCfg=(typeof nexusSrv==='function'&&!!nexusSrv());
+  const hasKeys=hasLocalKeys||srvCfg;
   const hasSyncData=BITGET.syncData&&BITGET.lastSync;
   const nc=document.getElementById('bg-not-cfg'),cnt=document.getElementById('bg-content');
   if(nc)nc.style.display=hasKeys?'none':'';
@@ -1215,7 +1218,8 @@ function renderBitget(){
   const pill=document.getElementById('bg-conn-pill');
   if(pill){
     if(hasSyncData){pill.textContent='● Connecté';pill.style.background='rgba(34,197,94,.12)';pill.style.color='var(--ok)';}
-    else if(hasKeys){pill.textContent='Clés configurées';pill.style.background='rgba(201,162,39,.1)';pill.style.color='var(--g)';}
+    else if(hasLocalKeys){pill.textContent='Clés configurées';pill.style.background='rgba(201,162,39,.1)';pill.style.color='var(--g)';}
+    else if(srvCfg){pill.textContent='● Serveur NEXUS';pill.style.background='rgba(34,197,94,.10)';pill.style.color='var(--ok)';}
     else{pill.textContent='Non connecté';pill.style.background='rgba(90,90,122,.2)';pill.style.color='var(--t2)';}
   }
   const st=document.getElementById('bg-sync-status');
@@ -2073,7 +2077,7 @@ document.addEventListener('DOMContentLoaded',()=>{
   go('dashboard');renderAI();
   // Bitget: show badge if data already cached, auto-sync silently
   // Bitget : auto-connexion à CHAQUE ouverture si les clés sont présentes, puis resync auto toutes les 5 min
-  const bgConnected=()=>BITGET.apiKey&&BITGET.secretKey&&BITGET.passphrase;
+  const bgConnected=()=>(typeof bgReady==='function')?bgReady():(BITGET.apiKey&&BITGET.secretKey&&BITGET.passphrase);
   setTimeout(()=>{updBGNavBadge();if(bgConnected())syncBitget();},2000);
   setInterval(()=>{if(bgConnected()&&document.visibilityState==='visible')syncBitget();},5*60*1000);
   if(_liveTimer)clearInterval(_liveTimer);_liveTimer=setInterval(updateLiveStatus,30000);
@@ -2382,7 +2386,7 @@ function exportHoldingReport(){
 }
 
 /* ---------- Synchro serveur NEXUS (Discord / Wispbyte) ---------- */
-function nexusSrv(){var u=localStorage.getItem('nexus_srv_url')||'';if(!u&&location.protocol==='http:'&&location.hostname&&location.hostname!=='localhost'&&location.hostname!=='127.0.0.1')u=location.origin;return u.replace(/\/+$/,'');}
+function nexusSrv(){var u=localStorage.getItem('nexus_srv_url')||'';if(!u&&(location.protocol==='http:'||location.protocol==='https:')&&location.hostname&&location.hostname!=='localhost'&&location.hostname!=='127.0.0.1'&&location.protocol!=='file:')u=location.origin;return u.replace(/\/+$/,'');}
 function nexusTok(){return localStorage.getItem('nexus_srv_token')||'';}
 function nexusCloudConfig(){const u=prompt('URL du serveur NEXUS (ex: http://IP:PORT) — vide pour désactiver :',nexusSrv());if(u===null)return;localStorage.setItem('nexus_srv_url',(u||'').trim());const t=prompt('Token du serveur (= AUTH_TOKEN) :',nexusTok());if(t!==null)localStorage.setItem('nexus_srv_token',(t||'').trim());toast('Serveur NEXUS enregistré ✓','ok');try{nexusCloudPull(true);}catch(e){}if(UI.view==='holding')renderHolding();}
 function nexusCloudPull(verbose){const srv=nexusSrv();if(!srv)return;const tok=nexusTok();const since=parseInt(localStorage.getItem('nexus_srv_since')||'0')||0;
