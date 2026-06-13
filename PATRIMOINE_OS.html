@@ -37,6 +37,8 @@ body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;bac
 #topbar{height:52px;flex-shrink:0;display:flex;align-items:center;gap:8px;padding:0 18px;background:rgba(6,6,10,.97);backdrop-filter:blur(20px);border-bottom:1px solid rgba(201,162,39,.07);z-index:40;}
 #tickbar{height:26px;flex-shrink:0;background:rgba(4,4,8,.99);border-bottom:1px solid rgba(255,255,255,.025);overflow:hidden;display:flex;align-items:center;}
 #page{flex:1;overflow-y:auto;padding:20px 26px 40px;position:relative;z-index:1;}
+.mob-menu{display:none!important;}
+#sb-backdrop{display:none;}
 
 /* SIDEBAR */
 .sb-logo{padding:14px 14px 12px;display:flex;align-items:center;gap:10px;border-bottom:1px solid rgba(255,255,255,.04);cursor:pointer;flex-shrink:0;user-select:none;}
@@ -333,8 +335,28 @@ textarea.cinp::placeholder{color:var(--t3);}
 .bg-status.paused{background:rgba(249,115,22,.12);color:var(--warn);}
 /* RESPONSIVE */
 @media(max-width:1000px){.g4{grid-template-columns:repeat(2,1fr)}.g12{grid-template-columns:1fr}}
-@media(max-width:900px){:root{--sw:52px;}.view{}.g3{grid-template-columns:repeat(2,1fr)}.fab{display:flex}}
-@media(max-width:600px){.g2,.g3,.kg{grid-template-columns:1fr}.g4{grid-template-columns:repeat(2,1fr)}.hero-val{font-size:30px}.fbar{flex-direction:column}}
+@media(max-width:900px){:root{--sw:52px;}.g3{grid-template-columns:repeat(2,1fr)}.fab{display:flex}}
+@media(max-width:640px){
+  /* Sidebar -> tiroir coulissant */
+  #sidebar{position:fixed;top:0;left:0;height:100%;width:240px!important;min-width:240px!important;transform:translateX(-100%);transition:transform .25s ease;box-shadow:0 0 50px rgba(0,0,0,.75);z-index:1500;}
+  #sidebar.open{transform:translateX(0);}
+  #sidebar.slim{width:240px!important;min-width:240px!important;}
+  #sidebar .sb-txt,#sidebar .sb-sec,#sidebar .ni-lbl,#sidebar .sb-wealth{display:block!important;opacity:1!important;height:auto!important;}
+  #sb-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1400;}
+  body.sb-open #sb-backdrop{display:block;}
+  .mob-menu{display:inline-flex!important;align-items:center;justify-content:center;}
+  /* Barre du haut compacte + scroll horizontal si besoin */
+  #topbar{height:48px;padding:0 8px;gap:5px;overflow-x:auto;-webkit-overflow-scrolling:touch;}
+  #topbar::-webkit-scrollbar{display:none;}
+  #topbar .btn{padding:5px 8px;font-size:11px;white-space:nowrap;flex-shrink:0;}
+  .tb-title{font-size:15px;white-space:nowrap;}
+  #page{padding:12px 12px 84px;}
+  .hero-label{font-size:8.5px;letter-spacing:.8px;}
+  .hero-val{font-size:25px;}
+  .g2,.g3,.g4,.kg{grid-template-columns:1fr!important}
+  .fbar{flex-direction:column}
+}
+@media(max-width:400px){.hero-val{font-size:21px}.tb-title{font-size:13px}}
 </style>
 </head>
 <body>
@@ -356,11 +378,13 @@ textarea.cinp::placeholder{color:var(--t3);}
     </div>
   </div>
 </nav>
+<div id="sb-backdrop" onclick="toggleSidebar()"></div>
 
 <!-- MAIN -->
 <div id="main">
   <div id="tickbar"><div id="tk-track"><span style="color:var(--t2);font-family:var(--fm);font-size:10px;padding:0 16px">⟳ Chargement des marchés…</span></div></div>
   <div id="topbar">
+    <button class="btn btn-ghost mob-menu" onclick="toggleSidebar()" title="Menu" style="padding:5px 10px;font-size:17px;line-height:1">☰</button>
     <div class="tb-title" id="tb-title">Tableau de bord</div>
     <div style="display:flex;align-items:center;gap:6px;font-family:var(--fm);font-size:9.5px;color:var(--t2)">
       <span class="live-dot stale" id="live-dot"></span><span id="live-time">—</span>
@@ -1291,8 +1315,8 @@ function mkChart(id,cfg){const c=document.getElementById(id);if(!c)return;if(UI.
 function sc(yFn){return{x:{grid:{color:'rgba(255,255,255,0.03)'},ticks:{color:'#5A5A7A',font:{size:10}}},y:{grid:{color:'rgba(255,255,255,0.04)'},ticks:{color:'#5A5A7A',font:{size:10},callback:yFn}}};}
 // NAVIGATION
 function renderNav(){document.getElementById('sb-nav').innerHTML=NAV.map(item=>{const s=item.sect?`<div class="sb-sec">${item.sect}</div>`:'';return s+`<div class="ni${UI.view===item.id?' on':''}" onclick="go('${item.id}')"><span class="ni-ic">${item.ic}</span><span class="ni-lbl">${item.lbl}</span></div>`;}).join('');}
-function go(id){UI.view=id;document.querySelectorAll('.view').forEach(v=>v.classList.remove('on'));document.getElementById('v-'+id)?.classList.add('on');document.getElementById('tb-title').textContent=TITLES[id]||id;renderNav();const map={dashboard:renderDash,transactions:()=>{if(_txTab==='bitget'){renderBitgetActivity();}else renderTxs();},calendar:renderCalendar,recurring:renderRecurring,cashflow:renderCashflow,watchlist:renderWatchlist,accounts:renderAccounts,budgets:renderBudgets,reports:renderReports,portfolio:renderPortfolio,bitget:renderBitget,live:()=>{renderLive();if(Date.now()-(window._lastRefresh||0)>30000){window._lastRefresh=Date.now();refreshPrices(true);}},dca:renderDCA,analyse:renderAnalyse,tax:renderTax,converter:renderConverter,ai:renderAI,settings:renderSettings};map[id]?.();updSbWealth();}
-function toggleSidebar(){document.getElementById('sidebar').classList.toggle('slim');}
+function go(id){UI.view=id;document.querySelectorAll('.view').forEach(v=>v.classList.remove('on'));document.getElementById('v-'+id)?.classList.add('on');document.getElementById('tb-title').textContent=TITLES[id]||id;renderNav();const map={dashboard:renderDash,transactions:()=>{if(_txTab==='bitget'){renderBitgetActivity();}else renderTxs();},calendar:renderCalendar,recurring:renderRecurring,cashflow:renderCashflow,watchlist:renderWatchlist,accounts:renderAccounts,budgets:renderBudgets,reports:renderReports,portfolio:renderPortfolio,bitget:renderBitget,live:()=>{renderLive();if(Date.now()-(window._lastRefresh||0)>30000){window._lastRefresh=Date.now();refreshPrices(true);}},dca:renderDCA,analyse:renderAnalyse,tax:renderTax,converter:renderConverter,ai:renderAI,settings:renderSettings};map[id]?.();updSbWealth();if(window.innerWidth<=640){document.getElementById('sidebar').classList.remove('open');document.body.classList.remove('sb-open');}}
+function toggleSidebar(){var sb=document.getElementById('sidebar');if(window.innerWidth<=640){sb.classList.toggle('open');document.body.classList.toggle('sb-open');}else{sb.classList.toggle('slim');}}
 function updSbWealth(){
   const nw=getNetWorth(),pv=pfVal(),sp=INV.spotBalance;
   const wpVal=document.getElementById('wp-val');
