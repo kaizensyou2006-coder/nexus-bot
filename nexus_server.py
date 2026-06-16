@@ -653,8 +653,25 @@ async def h_state(request):
         "momo": momo,
         "nsia": STATE["nsia"],
         "balances": STATE.get("balances") or {},
+        "bgCalib": STATE.get("bg_calib") or {"extra": 0, "override": {}},
         "updatedAt": STATE["updatedAt"],
     }))
+
+async def h_bgcalib(request):
+    """Calage Bitget (staking non vu par l'API) partage entre tous les appareils.
+    GET  /bgcalib?token=...            -> renvoie {extra, override}
+    POST /bgcalib?token=... {extra,override} -> enregistre."""
+    if not check_token(request):
+        return cors(web.json_response({"ok": False, "error": "bad token"}, status=401))
+    if request.method == "POST":
+        try:
+            body = await request.json()
+            STATE["bg_calib"] = {"extra": float(body.get("extra", 0) or 0),
+                                 "override": body.get("override") or {}}
+            save_state()
+        except Exception as e:
+            return cors(web.json_response({"ok": False, "error": str(e)}, status=400))
+    return cors(web.json_response({"ok": True, "bgCalib": STATE.get("bg_calib") or {"extra": 0, "override": {}}}))
 
 async def h_momo_ingest(request):
     """Reception d'un SMS MoMo depuis le telephone (MacroDroid).
@@ -740,6 +757,8 @@ async def start_http():
     app.router.add_get("/app", h_app)
     app.router.add_get("/state", h_state)
     app.router.add_post("/state", h_state)
+    app.router.add_get("/bgcalib", h_bgcalib)
+    app.router.add_post("/bgcalib", h_bgcalib)
     app.router.add_get("/momo", h_momo_ingest)
     app.router.add_post("/momo", h_momo_ingest)
     app.router.add_get("/momo/inbox", h_momo_inbox)
