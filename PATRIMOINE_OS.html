@@ -1172,9 +1172,9 @@ async function syncBitget(){
       bgFetch('/api/v2/earn/account/assets'),             // 1 — Earn (où atterrissent les achats DCA)
       bgFetch('/api/v2/earn/savings/assets'),             // 2 — Détail épargne (profits)
       bgFetch('/api/v2/account/all-account-balance'),     // 3 — Solde de TOUS les comptes en USDT (total fiable)
-      bgFetch('/api/v2/spot/wallet/deposit-records'+q),   // 4 — Dépôts 90 j
-      bgFetch('/api/v2/spot/wallet/withdrawal-records'+q),// 5 — Retraits 90 j
-      bgFetch('/api/v2/spot/trade/fills'+q),              // 6 — Achats/ventes 90 j (le DCA y apparaît)
+      bgFetch('/api/v2/spot/wallet/deposit-records',{startTime:d90,endTime:tn,limit:100}),   // 4 — Dépôts 90 j
+      bgFetch('/api/v2/spot/wallet/withdrawal-records',{startTime:d90,endTime:tn,limit:100}),// 5 — Retraits 90 j
+      bgFetch('/api/v2/spot/trade/fills',{startTime:d90,endTime:tn,limit:100}),              // 6 — Achats/ventes 90 j (le DCA y apparaît)
     ]);
     const val=i=>R[i].status==='fulfilled'?R[i].value:null;
     // Le Spot est l'appel critique : s'il échoue (pont coupé, clés invalides…), on remonte l'erreur.
