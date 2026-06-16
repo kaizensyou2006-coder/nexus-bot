@@ -248,6 +248,37 @@ async def bitget_overview(session):
     # Fallback : si all-account-balance vide, total = somme des positions
     if not got_total or res["total"] <= 0:
         res["total"] = sum(v for _, _, v in res["holdings"])
+    # Applique le calage staking saisi par l'utilisateur (STATE["bg_calib"]) — le staking n'est PAS expose par l'API
+    try:
+        calib = STATE.get("bg_calib") or {}
+        override = calib.get("override") or {}
+        extra = float(calib.get("extra", 0) or 0)
+        if override:
+            api_by_coin = {}
+            for c, amt, val in res["holdings"]:
+                base = str(c).split(" ")[0].upper()
+                a, v = api_by_coin.get(base, (0.0, 0.0))
+                api_by_coin[base] = (a + amt, v + val)
+            covered = set(str(k).upper() for k in override.keys())
+            new_total, new_holdings = 0.0, []
+            for coin, qty in override.items():
+                cu = str(coin).upper()
+                qf = float(qty or 0)
+                v = qf if cu in ("USDT", "USDC", "USD", "BUSD") else qf * prices.get(cu + "USDT", 0.0)
+                new_total += v
+                new_holdings.append((cu, qf, v))
+            for base, (amt, val) in api_by_coin.items():
+                if base not in covered:
+                    new_total += val
+                    new_holdings.append((base, amt, val))
+            res["holdings"] = new_holdings
+            res["total"] = new_total + extra
+            res["earn"] = max(0.0, res["total"] - res["spot"] - res["others"])
+        elif extra > 0:
+            res["total"] += extra
+            res["earn"] += extra
+    except Exception as e:
+        sys.stderr.write("[bitget] calib: %s\n" % e)
     res["holdings"].sort(key=lambda x: -x[2])
     return res
 
