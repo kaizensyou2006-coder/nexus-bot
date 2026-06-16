@@ -1535,13 +1535,28 @@ if discord is not None:
             return
         emb = discord.Embed(
             title="🛰️ NEXUS — Panneau de contrôle",
-            description=("Pilote ta **holding & finance** d'un clic.\n\n"
-                         "📊 **Rapport complet** · 💸 **Récap MoMo** · 🏛 **NSIA** · 📈 **Bitget**\n"
-                         "🔄 **Synchroniser** · 🧹 **Nettoyer les doublons** · ⚙️ **État serveur**\n\n"
-                         "📥 *Dépose tes PDF / captures / relevés NSIA dans le salon d'import : "
-                         "chaque dépense et retrait est noté automatiquement sur ton dashboard.*"),
+            description="Pilote toute ta **holding & finance** d'un clic. Voici ce que fait chaque bouton :",
             color=GOLD)
-        emb.set_footer(text="NEXUS • toujours en ligne")
+        emb.add_field(name="🏦 Voir mes soldes", value=(
+            "🏦 **Patrimoine total** — tout consolidé (MoMo + NSIA + Bitget)\n"
+            "📈 **Bitget** — détail spot / earn / staking\n"
+            "💸 **Récap MoMo** · 🏛 **NSIA** · 💱 **Solde MoMo**"), inline=False)
+        emb.add_field(name="📊 Rapports", value=(
+            "📊 **Rapport complet** · 📅 **7 j** · 🗓️ **14 j** · 📆 **30 j** · 📊 **90 j**\n"
+            "📄 **PDF 30 j** · 🗒️ **PDF 7 j**"), inline=False)
+        emb.add_field(name="⚙️ Contrôle & maintenance", value=(
+            "✨ **Tout actualiser** · 🔄 **Synchroniser** · 🔁 **Rafraîchir panneau**\n"
+            "🧹 **Nettoyer doublons** · ⚙️ **État serveur** · ♻️ **Re-scan** · 🧨 **RESET**\n"
+            "🔎 **Recherche** · 🔗 **Lien** · 🌐 **Ouvrir l'app** · ❓ **Aide**"), inline=False)
+        emb.add_field(name="📥 Automatique (zéro effort)", value=(
+            "Dépose un **PDF / capture / relevé** dans le salon d'import → chaque "
+            "**dépense, retrait, dépôt** est noté tout seul. Une capture d'accueil "
+            "**MTN / Moov** met à jour ton **solde**."), inline=False)
+        emb.add_field(name="⌨️ Commandes", value=(
+            "`/solde` `/bitget` `/momo` `/nsia`\n"
+            "`/rapport` `/recap [jours]` `/pdf [jours]`\n"
+            "`/sync` `/etat` `/panel` `/aide`"), inline=False)
+        emb.set_footer(text="NEXUS • toujours en ligne • mis à jour en continu")
         view = PanelView()
         msg_id = STATE.get("panel_msg")
         if msg_id:
@@ -1643,13 +1658,77 @@ async def run_discord(http_session):
         except Exception as ex:
             await interaction.followup.send("Erreur Bitget : %s" % ex, ephemeral=True)
 
-    @tree.command(name="aide", description="Aide et liste des commandes NEXUS")
+    @tree.command(name="momo", description="Récapitulatif Mobile Money (dépenses, retraits, dépôts)")
+    async def _cmd_momo(interaction):
+        await interaction.response.send_message(embed=build_momo_embed(), ephemeral=True)
+
+    @tree.command(name="nsia", description="Portefeuille NSIA (OPCVM)")
+    async def _cmd_nsia(interaction):
+        await interaction.response.send_message(embed=build_nsia_embed(), ephemeral=True)
+
+    @tree.command(name="etat", description="État du serveur NEXUS (uptime, Discord, données)")
+    async def _cmd_etat(interaction):
+        await interaction.response.send_message(embed=build_status_embed(), ephemeral=True)
+
+    @tree.command(name="sync", description="Synchroniser Bitget maintenant")
+    async def _cmd_sync(interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            ov = await bitget_overview(HTTP_SESSION)
+            if ov:
+                STATE["bitget"] = {"total": ov["total"], "spot": ov["spot"], "earn": ov["earn"],
+                                   "others": ov["others"], "ts": int(time.time() * 1000),
+                                   "holdings": [{"coin": c, "amt": a, "val": v} for c, a, v in ov["holdings"]]}
+                save_state()
+                await interaction.followup.send("🔄 Bitget synchronisé : **%s** (Spot %s · Earn %s)."
+                    % (fmt_usd(ov["total"]), fmt_usd(ov["spot"]), fmt_usd(ov["earn"])), ephemeral=True)
+            else:
+                await interaction.followup.send("Bitget indisponible (clés ?).", ephemeral=True)
+        except Exception as ex:
+            await interaction.followup.send("Erreur synchro : %s" % ex, ephemeral=True)
+
+    @tree.command(name="recap", description="Rapport patrimoine sur N jours (défaut 7)")
+    @discord.app_commands.describe(jours="Nombre de jours (1 à 365, défaut 7)")
+    async def _cmd_recap(interaction, jours: int = 7):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        d = max(1, min(int(jours), 365))
+        await interaction.followup.send(embed=await build_recap_embed(d), ephemeral=True)
+
+    @tree.command(name="pdf", description="Rapport patrimoine en PDF sur N jours (défaut 30)")
+    @discord.app_commands.describe(jours="Nombre de jours (1 à 365, défaut 30)")
+    async def _cmd_pdf(interaction, jours: int = 30):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            d = max(1, min(int(jours), 365))
+            data = build_pdf_report(d)
+            f = discord.File(io.BytesIO(data), filename="rapport_nexus_%dj.pdf" % d)
+            await interaction.followup.send(content="📄 **Rapport patrimoine (%d jours)**" % d, file=f, ephemeral=True)
+        except Exception as ex:
+            await interaction.followup.send("Erreur PDF : %s" % ex, ephemeral=True)
+
+    @tree.command(name="aide", description="Aide complète et liste de toutes les commandes NEXUS")
     async def _cmd_aide(interaction):
-        e = discord.Embed(title="❓ NEXUS — Aide", color=SLATE,
-            description=("**Commandes** : `/panel` `/rapport` `/solde` `/bitget` `/aide`\n\n"
-                        "Utilise `/panel` pour afficher le panneau de contrôle et tout piloter d'un clic "
-                        "(rapports, synchro, soldes, PDF…).\n\n"
-                        "📥 Dépose un PDF / capture / relevé dans le salon d'import : tout est noté automatiquement."))
+        e = discord.Embed(title="📖 NEXUS — Guide complet", color=GOLD,
+            description="Ton assistant patrimoine : **MoMo · NSIA · Bitget · rapports**, tout au même endroit.")
+        e.add_field(name="🏦 Patrimoine & soldes", value=(
+            "`/solde` — patrimoine total consolidé\n"
+            "`/bitget` — détail du compte Bitget (spot/earn/staking)\n"
+            "`/momo` — récap Mobile Money\n"
+            "`/nsia` — portefeuille NSIA"), inline=False)
+        e.add_field(name="📊 Rapports", value=(
+            "`/rapport` — rapport complet\n"
+            "`/recap [jours]` — rapport sur N jours · ex `/recap 30`\n"
+            "`/pdf [jours]` — rapport PDF · ex `/pdf 7`"), inline=False)
+        e.add_field(name="⚙️ Contrôle", value=(
+            "`/panel` — panneau de contrôle (tout d'un clic)\n"
+            "`/sync` — synchroniser Bitget maintenant\n"
+            "`/etat` — état du serveur\n"
+            "`/aide` — ce guide"), inline=False)
+        e.add_field(name="📥 Automatique (zéro effort)", value=(
+            "Dépose un **PDF / capture / relevé** dans le salon d'import → chaque "
+            "**dépense, retrait, dépôt** est noté tout seul. Une capture d'accueil "
+            "**MTN/Moov** met à jour ton **solde**."), inline=False)
+        e.set_footer(text="NEXUS • tape /panel pour le panneau cliquable")
         await interaction.response.send_message(embed=e, ephemeral=True)
 
     @client.event
