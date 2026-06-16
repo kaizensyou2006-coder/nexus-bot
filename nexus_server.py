@@ -1422,6 +1422,90 @@ if discord is not None:
             await interaction.response.send_message(
                 "🔗 **Ton tableau de bord** (clique ou copie) :\n%s" % url, ephemeral=True)
 
+        @discord.ui.button(label="Patrimoine total", emoji="🏦",
+                           style=discord.ButtonStyle.primary, custom_id="nexus:patri", row=0)
+        async def b_patri(self, interaction, button):
+            c = consolidated_total()
+            e = discord.Embed(title="🏦 Patrimoine total consolidé", color=GOLD,
+                              description="# %s" % fmt_xof(c["total"]))
+            e.add_field(name="📱 Mobile Money", value=fmt_xof(c["momo"]), inline=True)
+            e.add_field(name="🏛 NSIA", value=fmt_xof(c["nsia"]), inline=True)
+            e.add_field(name="📈 Bitget", value="%s\n(%s)" % (fmt_usd(c["bitget_usd"]), fmt_xof(c["bitget_xof"])), inline=True)
+            await interaction.response.send_message(embed=e, ephemeral=True)
+
+        @discord.ui.button(label="Tout actualiser", emoji="✨",
+                           style=discord.ButtonStyle.primary, custom_id="nexus:refreshall", row=1)
+        async def b_refreshall(self, interaction, button):
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            try:
+                n_msg, _ = await rescan_import(interaction.client)
+                try:
+                    ov = await bitget_overview(HTTP_SESSION)
+                    if ov:
+                        STATE["bitget"] = {"total": ov["total"], "spot": ov["spot"], "earn": ov["earn"],
+                                           "others": ov["others"], "ts": int(time.time() * 1000),
+                                           "holdings": [{"coin": c, "amt": a, "val": v} for c, a, v in ov["holdings"]]}
+                        save_state()
+                except Exception:
+                    pass
+                c = consolidated_total()
+                await interaction.followup.send(
+                    "✨ Tout actualisé : MoMo relu (%d msg), Bitget %s. **Patrimoine total : %s**."
+                    % (n_msg, fmt_usd(c["bitget_usd"]), fmt_xof(c["total"])), ephemeral=True)
+            except Exception as ex:
+                await interaction.followup.send("Erreur actualisation : %s" % ex, ephemeral=True)
+
+        @discord.ui.button(label="Solde MoMo", emoji="💱",
+                           style=discord.ButtonStyle.success, custom_id="nexus:momobal", row=2)
+        async def b_momobal(self, interaction, button):
+            bynet = momo_balance_by_net()
+            lines = "\n".join("• **%s** : %s" % (("Moov" if k == "moov" else "MTN"), fmt_xof(v))
+                              for k, v in bynet.items()) or "Aucun solde enregistré."
+            e = discord.Embed(title="💱 Soldes Mobile Money", description=lines, color=GREEN)
+            await interaction.response.send_message(embed=e, ephemeral=True)
+
+        @discord.ui.button(label="Rafraîchir panneau", emoji="🔁",
+                           style=discord.ButtonStyle.secondary, custom_id="nexus:repanel", row=2)
+        async def b_repanel(self, interaction, button):
+            await interaction.response.defer(ephemeral=True)
+            STATE["panel_msg"] = None
+            await post_or_update_panel(interaction.client)
+            await interaction.followup.send("🔁 Panneau rafraîchi ✅", ephemeral=True)
+
+        @discord.ui.button(label="Rapport 90j", emoji="📊",
+                           style=discord.ButtonStyle.success, custom_id="nexus:recap_90", row=3)
+        async def b_recap_90(self, interaction, button):
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            await post_report(interaction.client, embed=await build_recap_embed(90), view=ReportActionView())
+            await interaction.followup.send("📊 Rapport 90 jours posté dans le salon de rapports.", ephemeral=True)
+
+        @discord.ui.button(label="PDF 7j", emoji="🗒️",
+                           style=discord.ButtonStyle.secondary, custom_id="nexus:pdf7", row=4)
+        async def b_pdf7(self, interaction, button):
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            try:
+                data = build_pdf_report(7)
+                f = discord.File(io.BytesIO(data), filename="rapport_nexus_7j.pdf")
+                await post_report(interaction.client, content="🗒️ **Rapport patrimoine (7 jours)**",
+                                  file=f, view=ReportActionView())
+                await interaction.followup.send("🗒️ PDF 7 jours posté dans le salon de rapports.", ephemeral=True)
+            except Exception as ex:
+                await interaction.followup.send("Erreur PDF : %s" % ex, ephemeral=True)
+
+        @discord.ui.button(label="Aide", emoji="❓",
+                           style=discord.ButtonStyle.secondary, custom_id="nexus:help", row=4)
+        async def b_help(self, interaction, button):
+            e = discord.Embed(title="❓ Aide — Panneau NEXUS", color=SLATE,
+                description=("**Boutons**\n"
+                            "🏦 Patrimoine · 📊 Rapport · 💸 MoMo · 🏛 NSIA · 📈 Bitget\n"
+                            "✨ Tout actualiser · 🔄 Synchroniser · 🧹 Doublons · ⚙️ État\n"
+                            "📅/🗓️/📆/📊 Rapports 7/14/30/90 j · 📄 PDF · 🗒️ PDF 7j\n"
+                            "🔎 Recherche · 💱 Solde MoMo · 🔁 Rafraîchir · 🔗 Lien · ♻️ Re-scan\n\n"
+                            "**Commandes** : `/panel` `/rapport` `/solde` `/bitget` `/aide`\n\n"
+                            "📥 *Dépose un PDF / capture / relevé dans le salon d'import : "
+                            "chaque dépense et retrait est noté automatiquement.*"))
+            await interaction.response.send_message(embed=e, ephemeral=True)
+
     async def post_or_update_panel(client):
         if not PANEL_CHANNEL or not str(PANEL_CHANNEL).isdigit():
             return
@@ -1522,6 +1606,32 @@ async def run_discord(http_session):
     async def _cmd_report(interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
         await interaction.followup.send(embed=await build_report_embed(), ephemeral=True)
+
+    @tree.command(name="solde", description="Patrimoine total consolidé (MoMo + NSIA + Bitget)")
+    async def _cmd_solde(interaction):
+        c = consolidated_total()
+        e = discord.Embed(title="🏦 Patrimoine total", color=GOLD, description="# %s" % fmt_xof(c["total"]))
+        e.add_field(name="📱 MoMo", value=fmt_xof(c["momo"]), inline=True)
+        e.add_field(name="🏛 NSIA", value=fmt_xof(c["nsia"]), inline=True)
+        e.add_field(name="📈 Bitget", value=fmt_usd(c["bitget_usd"]), inline=True)
+        await interaction.response.send_message(embed=e, ephemeral=True)
+
+    @tree.command(name="bitget", description="Détail complet du compte Bitget")
+    async def _cmd_bitget(interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            await interaction.followup.send(embed=await build_bitget_embed(), ephemeral=True)
+        except Exception as ex:
+            await interaction.followup.send("Erreur Bitget : %s" % ex, ephemeral=True)
+
+    @tree.command(name="aide", description="Aide et liste des commandes NEXUS")
+    async def _cmd_aide(interaction):
+        e = discord.Embed(title="❓ NEXUS — Aide", color=SLATE,
+            description=("**Commandes** : `/panel` `/rapport` `/solde` `/bitget` `/aide`\n\n"
+                        "Utilise `/panel` pour afficher le panneau de contrôle et tout piloter d'un clic "
+                        "(rapports, synchro, soldes, PDF…).\n\n"
+                        "📥 Dépose un PDF / capture / relevé dans le salon d'import : tout est noté automatiquement."))
+        await interaction.response.send_message(embed=e, ephemeral=True)
 
     @client.event
     async def on_ready():
