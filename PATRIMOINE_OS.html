@@ -336,6 +336,14 @@ textarea.cinp::placeholder{color:var(--t3);}
 /* RESPONSIVE */
 @media(max-width:1000px){.g4{grid-template-columns:repeat(2,1fr)}.g12{grid-template-columns:1fr}}
 @media(max-width:900px){:root{--sw:52px;}.g3{grid-template-columns:repeat(2,1fr)}.fab{display:flex}}
+/* === RESPONSIVE : empilement des rangées flex (corrige le débordement mobile) === */
+@media(max-width:860px){
+  .row-flex{flex-direction:column!important;gap:14px!important;}
+  .row-flex>*{flex:0 0 auto!important;width:100%!important;min-width:0!important;}
+  .g12{grid-template-columns:1fr!important}
+  .card{min-width:0;}
+  .chart-wrap canvas{max-width:100%!important;}
+}
 @media(max-width:640px){
   /* Sidebar -> tiroir coulissant */
   #sidebar{position:fixed;top:0;left:0;height:100%;width:240px!important;min-width:240px!important;transform:translateX(-100%);transition:transform .25s ease;box-shadow:0 0 50px rgba(0,0,0,.75);z-index:1500;}
@@ -348,15 +356,27 @@ textarea.cinp::placeholder{color:var(--t3);}
   /* Barre du haut compacte + scroll horizontal si besoin */
   #topbar{height:48px;padding:0 8px;gap:5px;overflow-x:auto;-webkit-overflow-scrolling:touch;}
   #topbar::-webkit-scrollbar{display:none;}
-  #topbar .btn{padding:5px 8px;font-size:11px;white-space:nowrap;flex-shrink:0;}
-  .tb-title{font-size:15px;white-space:nowrap;}
-  #page{padding:12px 12px 84px;}
+  #topbar .btn{padding:5px 9px;font-size:11px;white-space:nowrap;flex-shrink:0;}
+  .tb-title{font-size:15px;white-space:nowrap;flex-shrink:0;}
+  #page{padding:12px 12px 88px;}
+  .hero{padding:18px 16px!important;}
   .hero-label{font-size:8.5px;letter-spacing:.8px;}
-  .hero-val{font-size:25px;}
-  .g2,.g3,.g4,.kg{grid-template-columns:1fr!important}
-  .fbar{flex-direction:column}
+  .hero-val{font-size:26px;word-break:break-word;}
+  .hero-row{gap:10px!important;flex-wrap:wrap;}
+  .g2,.g3,.g4{grid-template-columns:1fr!important}
+  .kg{grid-template-columns:repeat(2,1fr)!important;gap:10px!important}
+  .kc{padding:13px 14px;}
+  .kc-val{font-size:18px!important;}
+  .fbar{flex-direction:column;align-items:stretch;}
+  .fbar .sinp,.fbar .fsel{width:100%;}
+  .tbl{font-size:11px;white-space:nowrap;}
+  .tbl th,.tbl td{padding:6px 5px;}
+  /* Tableaux larges -> scroll horizontal dans la carte (pas la page) */
+  .card:has(.tbl){overflow-x:auto;-webkit-overflow-scrolling:touch;}
+  .ttabs{flex-wrap:wrap;}
+  .modal{width:94vw!important;max-width:94vw!important;max-height:88vh;overflow-y:auto;}
 }
-@media(max-width:400px){.hero-val{font-size:21px}.tb-title{font-size:13px}}
+@media(max-width:400px){.hero-val{font-size:22px}.tb-title{font-size:13px}.kg{grid-template-columns:1fr!important}}
 </style>
 </head>
 <body>
@@ -426,6 +446,11 @@ textarea.cinp::placeholder{color:var(--t3);}
       <div class="card">
         <div class="ch">Cashflow mensuel</div>
         <div class="chart-wrap ch-h4"><canvas id="c-cf"></canvas></div>
+      </div>
+      <div class="card card-glow">
+        <div class="ch">Répartition du patrimoine</div>
+        <div class="chart-wrap ch-h2"><canvas id="c-patri"></canvas></div>
+        <div id="d-patri-leg" style="margin-top:8px"></div>
       </div>
     </div>
   </div>
@@ -684,7 +709,8 @@ textarea.cinp::placeholder{color:var(--t3);}
       </div>
       <p id="bg-sync-status" style="font-size:11px;color:var(--t2);font-family:var(--fm);margin:0">Configurez vos clés API dans Paramètres pour commencer</p>
     </div>
-    <div style="display:flex;gap:8px;align-items:center">
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button class="btn btn-ghost btn-sm" onclick="go('transactions');switchTxTab('bitget')" style="color:#00AAE4;border-color:rgba(0,170,228,.25)">📜 Historique</button>
       <button class="btn btn-ghost btn-sm" onclick="go('settings')">⚙ Config API</button>
       <button class="btn" id="bg-sync-btn" onclick="syncBitget()" style="background:linear-gradient(135deg,#00AAE4,#00D4FF);color:#000;padding:7px 16px;font-weight:800;border:none;border-radius:var(--r8);cursor:pointer;font-size:12.5px;display:inline-flex;align-items:center;gap:6px;transition:all .16s ease">⟳ Synchroniser</button>
     </div>
@@ -1350,6 +1376,18 @@ function renderDash(){
   document.getElementById('d-dca').innerHTML=upDCA.length?upDCA.map(d=>{const days=Math.ceil((new Date(d.nextDate)-new Date())/86400000);const u=days<=2;return`<div class="dca-row${u?' urgent':''}"><div style="display:flex;align-items:center;justify-content:space-between"><div style="display:flex;align-items:center;gap:9px"><div style="width:30px;height:30px;border-radius:8px;background:${TARGET[d.asset]?.col||'#888'}18;color:${TARGET[d.asset]?.col||'#888'};display:flex;align-items:center;justify-content:center;font-size:14px">${TARGET[d.asset]?.ic||'?'}</div><div><div style="font-weight:700;font-size:13px">${d.asset}</div><div style="font-size:10px;color:var(--t2);font-family:var(--fm)">${d.freq}</div></div></div><div style="text-align:right"><div style="font-family:var(--fm);font-size:14px;font-weight:600;color:var(--gl)">${fm(d.amount)}</div><div style="font-size:10px;font-family:var(--fm);color:${u?'var(--err)':'var(--t2)'}">J-${Math.max(0,days)}</div></div></div></div>`;}).join(''):`<div style="text-align:center;padding:20px;color:var(--t2);font-size:12px">Aucun DCA · <button class="btn btn-gold btn-sm" onclick="go('dca')">Programmer</button></div>`;
   document.getElementById('d-txs').innerHTML=[...FIN.data.transactions].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,6).map(t=>{const cat=getCat(t.catId);return`<div class="txi" onclick="go('transactions')"><div class="tx-ic" style="background:${cat.col}18">${cat.ic}</div><div class="tx-info"><div class="tx-n">${esc(t.payee||cat.n)}</div><div class="tx-m">${fmtDate(t.date,true)}</div></div><div class="tx-a ${t.type}">${t.type==='inc'?'+':'-'}${fmtAmt(t.amount,t.cur||cur())}</div></div>`;}).join('')||'<div style="text-align:center;padding:20px;color:var(--t2);font-size:12px">Aucune transaction</div>';
   document.getElementById('d-positions').innerHTML=hs.map(([sym,h])=>{const p=getPrice(sym),val=h.qty*p,pnlP=val-h.invested,pctP=h.invested>0?(pnlP/h.invested)*100:0;return`<div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,.03)"><div style="width:34px;height:34px;border-radius:9px;background:${TARGET[sym]?.col||'#666'}18;color:${TARGET[sym]?.col||'#888'};display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0">${TARGET[sym]?.ic||sym[0]}</div><div style="flex:1"><div style="font-weight:700;font-size:13px">${sym}</div><div style="font-size:11px;color:var(--t2);font-family:var(--fm)">${h.qty.toFixed(4)}</div></div><div style="text-align:right"><div style="font-family:var(--fm);font-size:14px;font-weight:500">${fm(val)}</div><div style="font-size:11px;font-family:var(--fm);color:${pnlP>=0?'var(--ok)':'var(--err)'}">${pnlP>=0?'+':''}${fm(pnlP)} (${pctP.toFixed(1)}%)</div></div></div>`;}).join('')||'<div style="text-align:center;padding:20px;color:var(--t2);font-size:12px">Aucune position · <button class="btn btn-gold btn-sm" onclick="openBuyModal()">+ Investir</button></div>';
+  renderPatriChart();
+}
+function renderPatriChart(){
+  const cc=cur();const segs=[];
+  FIN.data.accounts.filter(a=>!isBitgetAcc(a)).forEach(a=>{const v=convertAmt(getAccBal(a.id),a.cur||cc,cc);if(Math.abs(v)>0.01)segs.push({label:a.n,val:v,col:a.col||'#888'});});
+  const cry=convertAmt(pfVal(),'USD',cc);if(cry>0.01)segs.push({label:'Crypto (Bitget)',val:cry,col:'#00AAE4'});
+  segs.sort((a,b)=>b.val-a.val);
+  const leg=document.getElementById('d-patri-leg');
+  if(!segs.length){mkChart('c-patri',{type:'doughnut',data:{labels:[],datasets:[{data:[1],backgroundColor:['#222']}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{enabled:false}}}});if(leg)leg.innerHTML='<div style="color:var(--t2);font-size:12px;text-align:center;padding:8px">Ajoute des comptes / connecte Bitget</div>';return;}
+  const tot=segs.reduce((s,x)=>s+x.val,0)||1;
+  mkChart('c-patri',{type:'doughnut',data:{labels:segs.map(s=>s.label),datasets:[{data:segs.map(s=>s.val),backgroundColor:segs.map(s=>s.col),borderWidth:0,hoverOffset:6}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:x=>`${x.label}: ${fmtM(x.raw)} (${(x.raw/tot*100).toFixed(0)}%)`}}},cutout:'68%'}});
+  if(leg)leg.innerHTML=segs.slice(0,7).map(s=>`<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:11.5px"><span style="color:${s.col};font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60%">● ${esc(s.label)}</span><span style="font-family:var(--fm);color:var(--t1);flex-shrink:0">${fmtM(s.val)} · ${(s.val/tot*100).toFixed(0)}%</span></div>`).join('');
 }
 // TRANSACTIONS
 function renderTxs(){
