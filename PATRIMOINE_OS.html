@@ -741,6 +741,17 @@ textarea.cinp::placeholder{color:var(--t3);}
     </div>
   </div>
   <div id="bg-content">
+    <div class="card mb" style="border-color:rgba(0,170,228,.25)">
+      <div class="ch" style="color:#00AAE4">🎯 Caler le total sur ton appli Bitget (staking)</div>
+      <div style="font-size:11.5px;color:var(--t2);line-height:1.6;margin-bottom:10px">L'API Bitget ne renvoie <strong style="color:var(--t0)">pas le staking</strong> (PoS ETH/SOL…). Saisis le <strong style="color:var(--t0)">total réel</strong> de ton appli Bitget (onglet Actifs → « Valeur totale des actifs ») : le bot calcule l'écart staking et l'ajoute. Le reste (spot + earn flexible) reste live et automatique.</div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input type="number" class="fi" id="bg-real-total" step="any" placeholder="ex: 1322.31" style="max-width:190px;font-family:var(--fm)">
+        <span style="font-size:11px;color:var(--t2)">USDT</span>
+        <button class="btn btn-gold btn-sm" onclick="saveBgCalibrate()">Caler</button>
+        <button class="btn btn-ghost btn-sm" onclick="clearBgCalibrate()">Réinit.</button>
+        <span id="bg-calib-info" style="font-size:11px;color:var(--t2);font-family:var(--fm)"></span>
+      </div>
+    </div>
     <div class="kg mb" id="bg-kpis"></div>
     <div class="g2 mb">
       <div class="card card-glow">
@@ -1273,7 +1284,8 @@ function renderBitget(){
     else{pill.textContent='Non connecté';pill.style.background='rgba(90,90,122,.2)';pill.style.color='var(--t2)';}
   }
   const st=document.getElementById('bg-sync-status');
-  if(st)st.textContent=BITGET.lastSync?'Dernière synchro: '+new Date(BITGET.lastSync).toLocaleString('fr-FR',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):(hasKeys?'Non synchronisé — cliquez sur Synchroniser':'Configurez vos clés API dans Paramètres pour commencer');if(!BITGET.syncData)return;const{assets=[],earn=[],savings=[],balances=[],grids=[]}=BITGET.syncData;// KPIs
+  if(st)st.textContent=BITGET.lastSync?'Dernière synchro: '+new Date(BITGET.lastSync).toLocaleString('fr-FR',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):(hasKeys?'Non synchronisé — cliquez sur Synchroniser':'Configurez vos clés API dans Paramètres pour commencer');const _ci=document.getElementById('bg-calib-info');if(_ci)_ci.innerHTML=(BITGET.manualExtra>0)?('✓ Staking ajouté: <span style="color:#00AAE4">$'+BITGET.manualExtra.toFixed(2)+'</span>'):'';const _rt=document.getElementById('bg-real-total');if(_rt&&!_rt.value&&BITGET.manualExtra>0){const _at=((BITGET.syncData&&BITGET.syncData.balances)||[]).reduce((s,x)=>s+parseFloat(x.usdtBalance||0),0);_rt.placeholder='actuel ≈ $'+(_at+BITGET.manualExtra).toFixed(2);}
+if(!BITGET.syncData)return;const{assets=[],earn=[],savings=[],balances=[],grids=[]}=BITGET.syncData;// KPIs
 const balByType=Object.fromEntries((balances||[]).map(b=>[b.accountType,parseFloat(b.usdtBalance||0)]));
 const totalSpot=assets.reduce((s,a)=>{const val=(parseFloat(a.available||0)+parseFloat(a.frozen||0));const sym=(a.coin||'').toUpperCase();const p=sym==='USDT'||sym==='USDC'?1:getPrice(sym)||0;return s+val*p;},0);
 const earnUSD=(balByType.earn!=null)?balByType.earn:earn.reduce((s,e)=>{const sym=(e.coin||'').toUpperCase();const p=sym==='USDT'||sym==='USDC'?1:getPrice(sym)||0;return s+parseFloat(e.amount||0)*p;},0);
@@ -1295,7 +1307,8 @@ function importBitgetToPortfolio(silent){const sd=BITGET.syncData;if(!sd||(!sd.a
   // On comble l'écart avec all-account-balance (valeur officielle Bitget) -> total juste partout.
   const _bal=(BITGET.syncData&&BITGET.syncData.balances)||[];
   const _known=Object.entries(INV.holdings).reduce((s,[k,h])=>s+(h.qty||0)*(getPrice(k)||0),0);
-  INV.bgReconcile=_bal.length?Math.max(0,Math.round((_bal.reduce((s,x)=>s+parseFloat(x.usdtBalance||0),0)-_known)*100)/100):0;
+  const _me=(BITGET&&BITGET.manualExtra)||0; // staking saisi manuellement (non vu par l'API)
+  INV.bgReconcile=_bal.length?Math.max(0,Math.round((_bal.reduce((s,x)=>s+parseFloat(x.usdtBalance||0),0)+_me-_known)*100)/100):_me;
   INV.spotBalance=0;invSave();
   if(count>0){if(!silent)toast('✅ '+count+' actifs importés (spot + earn)','ok');snapshotEquity();if(UI.view==='portfolio')renderPortfolio();}else if(!silent)toast('Aucun actif compatible trouvé','inf');}
 // PERSISTENCE
@@ -2184,7 +2197,9 @@ document.addEventListener('DOMContentLoaded',()=>{
 
 /* ---------- Helpers patrimoine ---------- */
 function isNsiaAcc(a){return !!a&&(a.type==='NSIA Invest'||(a.n||'').toLowerCase().includes('nsia'));}
-function bitgetTotalUSD(){const b=(BITGET&&BITGET.syncData&&BITGET.syncData.balances)||[];if(b.length)return b.reduce((s,x)=>s+parseFloat(x.usdtBalance||0),0);return (typeof pfVal==='function'?pfVal():0)+((typeof INV!=='undefined'&&INV.spotBalance)||0);}
+function bitgetTotalUSD(){const b=(BITGET&&BITGET.syncData&&BITGET.syncData.balances)||[];const base=b.length?b.reduce((s,x)=>s+parseFloat(x.usdtBalance||0),0):((typeof pfVal==='function'?pfVal():0)+((typeof INV!=='undefined'&&INV.spotBalance)||0));return base+((BITGET&&BITGET.manualExtra)||0);}
+function saveBgCalibrate(){const el=document.getElementById('bg-real-total');const v=parseFloat((el?.value||'').replace(',','.'));if(isNaN(v)||v<0){toast('Montant invalide','err');return;}const apiTot=((BITGET.syncData&&BITGET.syncData.balances)||[]).reduce((s,x)=>s+parseFloat(x.usdtBalance||0),0);BITGET.manualExtra=Math.max(0,Math.round((v-apiTot)*100)/100);bgSave();importBitgetToPortfolio(true);if(typeof afterBitgetSync==='function')afterBitgetSync();renderBitget();updSbWealth();if(UI.view==='portfolio')renderPortfolio();if(UI.view==='dashboard')renderDash();if(UI.view==='holding'&&typeof renderHolding==='function')renderHolding();toast('✓ Calé — staking ajouté: $'+BITGET.manualExtra.toFixed(2),'ok');}
+function clearBgCalibrate(){BITGET.manualExtra=0;bgSave();importBitgetToPortfolio(true);if(typeof afterBitgetSync==='function')afterBitgetSync();renderBitget();updSbWealth();if(UI.view==='portfolio')renderPortfolio();if(UI.view==='dashboard')renderDash();if(UI.view==='holding'&&typeof renderHolding==='function')renderHolding();toast('Calibrage réinitialisé','ok');}
 function bitgetTotalCur(){return convertAmt(bitgetTotalUSD(),'USD',cur());}
 function bitgetTypeMap(){return Object.fromEntries(((BITGET&&BITGET.syncData&&BITGET.syncData.balances)||[]).map(b=>[b.accountType,parseFloat(b.usdtBalance||0)]));}
 function nsiaAccount(){return FIN.data.accounts.find(isNsiaAcc);}
