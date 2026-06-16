@@ -194,7 +194,7 @@ async def bitget_overview(session):
     'total' = valeur de TOUS les comptes (spot + earn + bots + futures...), pas juste le spot."""
     if not (BITGET_KEY and BITGET_SECRET and BITGET_PASS):
         return None
-    res = {"total": 0.0, "spot": 0.0, "earn": 0.0, "others": 0.0, "holdings": []}
+    res = {"total": 0.0, "spot": 0.0, "earn": 0.0, "others": 0.0, "holdings": [], "change": {}}
     got_total = False
     # 1) Total fiable par type de compte
     try:
@@ -219,7 +219,13 @@ async def bitget_overview(session):
     try:
         _, t2 = await bitget_request(session, "GET", "/api/v2/spot/market/tickers")
         for t in json.loads(t2).get("data", []):
-            prices[t.get("symbol", "")] = float(t.get("lastPr", 0) or 0)
+            sym = t.get("symbol", "")
+            prices[sym] = float(t.get("lastPr", 0) or 0)
+            if sym.endswith("USDT"):
+                try:
+                    res["change"][sym[:-4]] = float(t.get("change24h", t.get("changeUtc24h", 0)) or 0) * 100.0
+                except Exception:
+                    pass
     except Exception as e:
         sys.stderr.write("[bitget] tickers: %s\n" % e)
     def _val(coin, amt):
@@ -865,6 +871,23 @@ def consolidated_total():
     return {"total": total, "momo": momo_tot, "bynet": bynet,
             "nsia": nsia, "bitget_usd": bg_usd, "bitget_xof": bg_xof}
 
+def _bar(pct, width=12):
+    """Barre de progression unicode pour les embeds Discord."""
+    try:
+        pct = max(0.0, min(100.0, float(pct or 0)))
+    except Exception:
+        pct = 0.0
+    fill = int(round(pct / 100.0 * width))
+    return "█" * fill + "░" * (width - fill)
+
+def _chg(pct):
+    """Petit indicateur de variation 24h."""
+    try:
+        p = float(pct or 0)
+    except Exception:
+        p = 0.0
+    return ("🟢▲" if p > 0.05 else ("🔴▼" if p < -0.05 else "⚪")) + ("%+.1f%%" % p)
+
 def _ascii(s):
     """Nettoie pour le PDF (police latin-1)."""
     return (str(s or "")).encode("latin-1", "replace").decode("latin-1")
@@ -1017,6 +1040,14 @@ if discord is not None:
         if STATE.get("patrimoine"):
             e.add_field(name="🗂 Patrimoine (app)", value="Synchronisé depuis l'app ✅", inline=False)
         c = consolidated_total()
+        ctot = c["total"] or 1.0
+        repl = []
+        for lbl, val in (("📱 MoMo", c["momo"]), ("🏛 NSIA", c["nsia"]), ("📈 Bitget", c["bitget_xof"])):
+            if val > 0:
+                p = val / ctot * 100
+                repl.append("%s `%s` %.0f%%" % (lbl, _bar(p, 14), p))
+        if repl:
+            e.add_field(name="🥧 Répartition du patrimoine", value="\n".join(repl), inline=False)
         e.description = "💰 **Patrimoine total consolidé ≈ %s**\n*(MoMo + NSIA + Bitget)*" % fmt_xof(c["total"])
         e.set_footer(text="NEXUS • holding & finance")
         e.timestamp = discord.utils.utcnow()
@@ -1080,14 +1111,28 @@ if discord is not None:
         if ov is None:
             e.description = "Impossible de joindre Bitget (vérifie les clés / la permission Lecture)."
             return e
-        e.add_field(name="Valeur totale (tous comptes)", value="**%s**" % fmt_usd(ov["total"]), inline=False)
-        e.add_field(name="Répartition",
-                    value="Spot **%s** · Earn **%s** · Autres **%s**"
-                          % (fmt_usd(ov["spot"]), fmt_usd(ov["earn"]), fmt_usd(ov["others"])), inline=False)
-        body = "\n".join("• **%s** — %s (%s)"
-                         % (c, ("%.6f" % a).rstrip("0").rstrip("."), fmt_usd(v))
-                         for c, a, v in ov["holdings"][:12] if v > 0.01) or "Aucune position."
-        e.add_field(name="Positions (Spot + Earn)", value=body[:1024], inline=False)
+        tot = ov["total"] or 1.0
+        chg = ov.get("change") or {}
+        wch = sum((v / tot) * chg.get(str(c).split(" ")[0].upper(), 0.0) for c, a, v in ov["holdings"])
+        e.add_field(name="💰 Valeur totale (tous comptes)",
+                    value="# %s\n%s sur 24h" % (fmt_usd(ov["total"]), _chg(wch)), inline=False)
+        rep = []
+        for lbl, val, ic in (("Spot", ov["spot"], "🔵"), ("Earn / Staking", ov["earn"], "🟢"), ("Autres", ov["others"], "🟡")):
+            if val > 0.01:
+                p = val / tot * 100
+                rep.append("%s `%s` **%s** · %.0f%%" % (ic, _bar(p), fmt_usd(val), p))
+        e.add_field(name="📊 Répartition par compte", value="\n".join(rep) or "—", inline=False)
+        lines = []
+        for c, a, v in ov["holdings"][:10]:
+            if v <= 0.01:
+                continue
+            base = str(c).split(" ")[0].upper()
+            p = v / tot * 100
+            lines.append("`%s` **%s** %.0f%% · %s\n%s — %s"
+                         % (_bar(p, 10), base, p, _chg(chg.get(base, 0.0)),
+                            ("%.5f" % a).rstrip("0").rstrip("."), fmt_usd(v)))
+        e.add_field(name="🪙 Positions par actif", value=("\n".join(lines))[:1024] or "Aucune position.", inline=False)
+        e.set_footer(text="NEXUS • staking inclus si calé • en direct")
         e.timestamp = discord.utils.utcnow()
         return e
 
