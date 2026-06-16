@@ -1355,15 +1355,16 @@ function updSbWealth(){
 // DASHBOARD
 function renderDash(){
   const nw=getNetWorth(),pv=pfVal(),sp=INV.spotBalance,inc=getMonthInc(thisMonth()),exp=getMonthExp(thisMonth()),pnl=totPnL(),tinv=totInv(),pnlPct=tinv>0?(pnl/tinv)*100:0;
+  const bgUSD=(typeof bitgetTotalUSD==='function')?bitgetTotalUSD():(pv+sp); // total Bitget tous comptes (USDC + sous-comptes inclus) — source officielle = all-account-balance
   const spInCur=convertAmt(sp,'USD',cur());
-  const totalPat=nw+spInCur+(pv>0?convertAmt(pv,'USD',cur()):0);
-  document.getElementById('d-total').textContent=pv>0?fmtM(nw)+' + '+fm(pv+sp):sp>0?fmtM(nw)+' + '+fm(sp):fmtM(nw);
+  const totalPat=nw+convertAmt(bgUSD,'USD',cur());
+  document.getElementById('d-total').textContent=bgUSD>0?fmtM(nw)+' + '+fm(bgUSD):fmtM(nw);
   const pc=document.getElementById('d-pch');pc.className='pch '+(pnlPct>=0?'up':'dn');pc.textContent=(pnlPct>=0?'▲ ':'▼ ')+Math.abs(pnlPct).toFixed(2)+'% portfolio';
   const bgAcc=FIN.data.accounts.find(a=>isBitgetAcc(a));
   const bgLbl=bgAcc?bgAcc.n:'Bitget';
-  document.getElementById('d-sub').textContent=`Finances: ${fmtM(nw)}${sp>0?' · '+bgLbl+': '+fm(sp):''}${pv>0?' · Portfolio: '+fm(pv):''}`;
+  document.getElementById('d-sub').textContent=`Finances: ${fmtM(nw)}${bgUSD>0?' · '+bgLbl+': '+fm(bgUSD):''}`;
   document.getElementById('d-row').innerHTML=`<div class="hero-stat"><div class="hs-lbl">REVENUS</div><div class="hs-val up">${fmtM(inc)}</div></div><div class="hero-stat"><div class="hs-lbl">DÉPENSES</div><div class="hs-val dn">${fmtM(exp)}</div></div><div class="hero-stat"><div class="hs-lbl">ÉPARGNE</div><div class="hs-val">${getSavRate()}%</div></div><div class="hero-stat"><div class="hs-lbl">P&L TOTAL</div><div class="hs-val ${pnl>=0?'up':'dn'}">${fm(pnl)}</div></div><div class="hero-stat"><div class="hs-lbl">INVESTI</div><div class="hs-val">${fm(tinv)}</div></div>`;
-  if(INV.goal>0){const pt=Math.min(100,((pv+sp)/INV.goal)*100);document.getElementById('d-goal-wrap').style.display='block';document.getElementById('d-goal-pct').textContent=pt.toFixed(1)+'% de '+fm(INV.goal);document.getElementById('d-goal-bar').style.width=pt+'%';}
+  if(INV.goal>0){const pt=Math.min(100,(bgUSD/INV.goal)*100);document.getElementById('d-goal-wrap').style.display='block';document.getElementById('d-goal-pct').textContent=pt.toFixed(1)+'% de '+fm(INV.goal);document.getElementById('d-goal-bar').style.width=pt+'%';}
   document.getElementById('d-kpis').innerHTML=[{lbl:'Net Worth finances',val:fmtM(nw),sub:fmtM(inc-exp)+' cashflow (hors Bitget)',cls:inc>exp?'up':'dn'},{lbl:'Portefeuille invest.',val:fm(pv),sub:(pnl>=0?'▲ ':'')+fm(Math.abs(pnl))+' P&L',cls:pnl>=0?'up':'dn'},{lbl:'Total Bitget',val:fm(typeof bitgetTotalUSD==='function'?bitgetTotalUSD():pv),sub:'spot + earn live',cls:'ne'},{lbl:'Taux épargne',val:getSavRate()+'%',sub:'Ce mois',cls:getSavRate()>=20?'up':getSavRate()>=10?'ne':'dn'}].map((k,i)=>`<div class="kc" style="animation-delay:${i*0.05}s"><div class="kc-lbl">${k.lbl}</div><div class="kc-val">${k.val}</div><div class="kc-sub ${k.cls}">${k.sub}</div></div>`).join('');
   const m6=[];for(let i=5;i>=0;i--){const d=new Date();d.setMonth(d.getMonth()-i);m6.push(d.toISOString().slice(0,7));}
   const eqH=INV.equityHistory.slice(-30);
