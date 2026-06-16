@@ -748,6 +748,7 @@ textarea.cinp::placeholder{color:var(--t3);}
         <input type="number" class="fi" id="bg-real-total" step="any" placeholder="ex: 1322.31" style="max-width:190px;font-family:var(--fm)">
         <span style="font-size:11px;color:var(--t2)">USDT</span>
         <button class="btn btn-gold btn-sm" onclick="saveBgCalibrate()">Caler</button>
+        <button class="btn btn-ghost btn-sm" onclick="openBgQtyModal()" style="color:#00AAE4;border-color:rgba(0,170,228,.3)">✏️ Corriger par coin (précis)</button>
         <button class="btn btn-ghost btn-sm" onclick="clearBgCalibrate()">Réinit.</button>
         <span id="bg-calib-info" style="font-size:11px;color:var(--t2);font-family:var(--fm)"></span>
       </div>
@@ -998,6 +999,7 @@ textarea.cinp::placeholder{color:var(--t3);}
 <div class="ovl" id="ovl-rec"><div class="modal"><div id="ovl-rec-content"></div></div></div>
 <div class="ovl" id="ovl-watch"><div class="modal"><div id="ovl-watch-content"></div></div></div>
 <div class="ovl" id="ovl-momo"><div class="modal" style="max-width:680px"><div id="ovl-momo-content"></div></div></div>
+<div class="ovl" id="ovl-bgqty"><div class="modal" style="max-width:460px"><div id="ovl-bgqty-content"></div></div></div>
 
 <div class="ovl" id="ovl-buy">
   <div class="modal">
@@ -1302,6 +1304,8 @@ function importBitgetToPortfolio(silent){const sd=BITGET.syncData;if(!sd||(!sd.a
   const qtyBy={};
   (sd.assets||[]).forEach(a=>{const sym=(a.coin||'').toUpperCase();const q=parseFloat(a.available||0)+parseFloat(a.frozen||a.locked||0);if(q>0)qtyBy[sym]=(qtyBy[sym]||0)+q;});
   (sd.earn||[]).forEach(e=>{const sym=(e.coin||'').toUpperCase();const q=parseFloat(e.amount||0);if(q>0)qtyBy[sym]=(qtyBy[sym]||0)+q;});
+  // Quantités corrigées manuellement (staking non vu par l'API) : remplacent la valeur auto
+  Object.entries((BITGET&&BITGET.qtyOverride)||{}).forEach(([s,q])=>{const sym=s.toUpperCase();const v=parseFloat(q);if(!isNaN(v)&&v>0)qtyBy[sym]=v;});
   let count=0;
   Object.entries(qtyBy).forEach(([sym,qty])=>{if(qty<=0||!TARGET[sym])return;const p=getPrice(sym)||((sym==='USDT'||sym==='USDC')?1:0);INV.holdings[sym]={qty,avgPrice:p,invested:qty*p,bg:true};count++;});/* bg:true = solde live Bitget (pas de coût d'achat fiable via l'API) -> P&L non inventé */
   // Réconciliation : l'API ne détaille pas tous les produits Earn/staking (ex: ETH/SOL en staking).
@@ -2198,9 +2202,15 @@ document.addEventListener('DOMContentLoaded',()=>{
 
 /* ---------- Helpers patrimoine ---------- */
 function isNsiaAcc(a){return !!a&&(a.type==='NSIA Invest'||(a.n||'').toLowerCase().includes('nsia'));}
-function bitgetTotalUSD(){const b=(BITGET&&BITGET.syncData&&BITGET.syncData.balances)||[];const base=b.length?b.reduce((s,x)=>s+parseFloat(x.usdtBalance||0),0):((typeof pfVal==='function'?pfVal():0)+((typeof INV!=='undefined'&&INV.spotBalance)||0));return base+((BITGET&&BITGET.manualExtra)||0);}
+function bitgetTotalUSD(){const b=(BITGET&&BITGET.syncData&&BITGET.syncData.balances)||[];const known=(typeof INV!=='undefined'&&INV.holdings)?Object.entries(INV.holdings).reduce((s,[k,h])=>s+(h.qty||0)*getPrice(k),0):0;const base=b.length?b.reduce((s,x)=>s+parseFloat(x.usdtBalance||0),0):known;return Math.max(base+((BITGET&&BITGET.manualExtra)||0),known);}
 function saveBgCalibrate(){const el=document.getElementById('bg-real-total');const v=parseFloat((el?.value||'').replace(',','.'));if(isNaN(v)||v<0){toast('Montant invalide','err');return;}const apiTot=((BITGET.syncData&&BITGET.syncData.balances)||[]).reduce((s,x)=>s+parseFloat(x.usdtBalance||0),0);BITGET.manualExtra=Math.max(0,Math.round((v-apiTot)*100)/100);bgSave();importBitgetToPortfolio(true);if(typeof afterBitgetSync==='function')afterBitgetSync();renderBitget();updSbWealth();if(UI.view==='portfolio')renderPortfolio();if(UI.view==='dashboard')renderDash();if(UI.view==='holding'&&typeof renderHolding==='function')renderHolding();toast('✓ Calé — staking ajouté: $'+BITGET.manualExtra.toFixed(2),'ok');}
 function clearBgCalibrate(){BITGET.manualExtra=0;bgSave();importBitgetToPortfolio(true);if(typeof afterBitgetSync==='function')afterBitgetSync();renderBitget();updSbWealth();if(UI.view==='portfolio')renderPortfolio();if(UI.view==='dashboard')renderDash();if(UI.view==='holding'&&typeof renderHolding==='function')renderHolding();toast('Calibrage réinitialisé','ok');}
+function bgQtyCoins(){const set=new Set(Object.keys(INV.holdings||{}).filter(s=>TARGET[s]));['BTC','ETH','SOL','XRP','USDT','USDC'].forEach(s=>{if(TARGET[s])set.add(s);});return [...set];}
+function openBgQtyModal(){const ov=(BITGET.qtyOverride)||{};const coins=bgQtyCoins();document.getElementById('ovl-bgqty-content').innerHTML=`<div class="modal-hd"><div class="modal-ttl">✏️ Corriger les quantités (staking)</div><button class="xbtn" onclick="closeOvl('ovl-bgqty')">✕</button></div>
+  <div style="font-size:11.5px;color:var(--t2);line-height:1.6;margin-bottom:12px">L'API Bitget ne renvoie pas le staking. Saisis la <strong style="color:var(--t0)">quantité totale exacte</strong> de chaque coin telle qu'affichée dans ton appli Bitget (onglet <strong>Actifs</strong>). Laisse vide pour garder la valeur auto de l'API. Le total se recalcule tout seul avec les prix.</div>
+  ${coins.map(s=>{const cur=(INV.holdings[s]?.qty)||0;const t=TARGET[s];return `<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px"><div style="width:84px;display:flex;align-items:center;gap:7px;font-weight:700;font-size:13px"><span style="width:24px;height:24px;border-radius:6px;background:${t.col}18;color:${t.col};display:inline-flex;align-items:center;justify-content:center;font-size:13px">${t.ic}</span>${s}</div><input type="number" step="any" class="fi" id="bgq-${s}" value="${ov[s]!=null?ov[s]:''}" placeholder="auto: ${cur.toFixed(6)}" style="flex:1;font-family:var(--fm);font-size:13px"></div>`;}).join('')}
+  <div class="btn-row" style="margin-top:12px"><button class="btn btn-ghost btn-sm" onclick="BITGET.qtyOverride={};bgSave();importBitgetToPortfolio(true);renderBitget();if(UI.view==='portfolio')renderPortfolio();updSbWealth();closeOvl('ovl-bgqty');toast('Quantités auto rétablies','ok')">↺ Tout en auto</button><button class="btn btn-ghost" onclick="closeOvl('ovl-bgqty')">Annuler</button><button class="btn btn-gold" onclick="saveBgQty()">✓ Appliquer</button></div>`;openOvl('ovl-bgqty');}
+function saveBgQty(){const ov={};bgQtyCoins().forEach(s=>{const el=document.getElementById('bgq-'+s);if(el&&el.value.trim()!==''){const v=parseFloat(el.value.replace(',','.'));if(!isNaN(v)&&v>=0)ov[s]=v;}});BITGET.qtyOverride=ov;BITGET.manualExtra=0;bgSave();importBitgetToPortfolio(true);if(typeof afterBitgetSync==='function')afterBitgetSync();renderBitget();updSbWealth();if(UI.view==='portfolio')renderPortfolio();if(UI.view==='dashboard')renderDash();if(UI.view==='holding'&&typeof renderHolding==='function')renderHolding();closeOvl('ovl-bgqty');toast('✓ Quantités corrigées — total recalé sur ton compte','ok');}
 function bitgetTotalCur(){return convertAmt(bitgetTotalUSD(),'USD',cur());}
 function bitgetTypeMap(){return Object.fromEntries(((BITGET&&BITGET.syncData&&BITGET.syncData.balances)||[]).map(b=>[b.accountType,parseFloat(b.usdtBalance||0)]));}
 function nsiaAccount(){return FIN.data.accounts.find(isNsiaAcc);}
