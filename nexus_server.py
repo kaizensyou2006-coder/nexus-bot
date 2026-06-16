@@ -70,7 +70,9 @@ BITGET_SECRET   = _conf("BITGET_SECRET")
 BITGET_PASS     = _conf("BITGET_PASS")
 OCR_API_KEY     = _conf("OCR_API_KEY")
 PORT            = int(_conf("PORT") or os.environ.get("SERVER_PORT") or "8080")
-USD_XOF         = float(_conf("USD_XOF") or "640")   # taux approx USD->FCFA pour le total consolide
+USD_XOF         = float(_conf("USD_XOF") or "640")   # taux de repli USD->FCFA si le live echoue
+_USD_XOF_LIVE   = USD_XOF                             # taux USD->FCFA en direct (memes source que l'app)
+_USD_XOF_TS     = 0                                   # horodatage du dernier rafraichissement
 BITGET_BASE     = "https://api.bitget.com"
 
 # Session HTTP partagee (definie au demarrage) — utilisee par le bot Discord pour Bitget/OCR.
@@ -194,6 +196,10 @@ async def bitget_overview(session):
     'total' = valeur de TOUS les comptes (spot + earn + bots + futures...), pas juste le spot."""
     if not (BITGET_KEY and BITGET_SECRET and BITGET_PASS):
         return None
+    try:
+        await refresh_usd_xof(session)   # aligne le taux FCFA du Discord sur celui de l'app
+    except Exception:
+        pass
     res = {"total": 0.0, "spot": 0.0, "earn": 0.0, "others": 0.0, "holdings": [], "change": {}}
     got_total = False
     # 1) Total fiable par type de compte
@@ -787,6 +793,10 @@ async def start_http():
     app = web.Application()
     app["session"] = aiohttp.ClientSession()
     HTTP_SESSION = app["session"]
+    try:
+        await refresh_usd_xof(HTTP_SESSION)   # taux FCFA live des le demarrage
+    except Exception:
+        pass
     app.router.add_route("OPTIONS", "/{tail:.*}", h_options)
     app.router.add_get("/ping", h_ping)
     app.router.add_get("/health", h_ping)
@@ -860,13 +870,37 @@ def momo_balance_by_net():
         out[n] = nets[n] if n in nets else bal.get(n, 0.0)
     return out
 
+async def refresh_usd_xof(session):
+    """Recupere le taux USD->FCFA en direct (meme source que l'app) et le met en cache.
+    Garde le total Discord aligne sur l'app au lieu d'un taux fige. Cache 30 min."""
+    global _USD_XOF_LIVE, _USD_XOF_TS
+    if time.time() - _USD_XOF_TS < 1800 and _USD_XOF_TS:
+        return _USD_XOF_LIVE
+    for url in ("https://api.exchangerate-api.com/v4/latest/USD",
+                "https://open.er-api.com/v6/latest/USD"):
+        try:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as r:
+                d = await r.json()
+                rate = (d.get("rates") or d.get("conversion_rates") or {}).get("XOF")
+                if rate and float(rate) > 400:
+                    _USD_XOF_LIVE = float(rate)
+                    _USD_XOF_TS = int(time.time())
+                    return _USD_XOF_LIVE
+        except Exception as e:
+            sys.stderr.write("[fx] %s: %s\n" % (url, e))
+    return _USD_XOF_LIVE
+
+def get_usd_xof():
+    """Taux USD->FCFA courant (live si dispo, sinon repli)."""
+    return _USD_XOF_LIVE or USD_XOF
+
 def consolidated_total():
     """Patrimoine total combine en FCFA + le detail par poste."""
     bynet = momo_balance_by_net()
     momo_tot = sum(bynet.values())
     nsia = float((STATE.get("nsia") or {}).get("total", 0) or 0)
     bg_usd = float((STATE.get("bitget") or {}).get("total", 0) or 0)
-    bg_xof = bg_usd * USD_XOF
+    bg_xof = bg_usd * get_usd_xof()
     total = momo_tot + nsia + bg_xof
     return {"total": total, "momo": momo_tot, "bynet": bynet,
             "nsia": nsia, "bitget_usd": bg_usd, "bitget_xof": bg_xof}
