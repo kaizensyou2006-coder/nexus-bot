@@ -903,6 +903,21 @@ def consolidated_total():
     return {"total": total, "momo": momo_tot, "bynet": bynet,
             "nsia": nsia, "bitget_usd": bg_usd, "bitget_xof": bg_xof}
 
+async def refresh_bitget_state(session):
+    """Recalcule Bitget en direct (live + staking calé) et met STATE["bitget"] a jour.
+    A appeler AVANT consolidated_total() pour que le total consolide ne soit jamais perime."""
+    try:
+        ov = await bitget_overview(session)
+        if ov:
+            STATE["bitget"] = {"total": ov["total"], "spot": ov["spot"], "earn": ov["earn"],
+                               "others": ov["others"], "ts": int(time.time() * 1000),
+                               "holdings": [{"coin": c, "amt": a, "val": v} for c, a, v in ov["holdings"]]}
+            save_state()
+        return ov
+    except Exception as e:
+        sys.stderr.write("[bitget] refresh_state: %s\n" % e)
+        return None
+
 def _bar(pct, width=12):
     """Barre de progression unicode pour les embeds Discord."""
     try:
@@ -1529,6 +1544,7 @@ if discord is not None:
         async def b_pdf(self, interaction, button):
             await interaction.response.defer(ephemeral=True, thinking=True)
             try:
+                await refresh_bitget_state(HTTP_SESSION)
                 data = build_pdf_report(30)
                 f = discord.File(io.BytesIO(data), filename="rapport_nexus_30j.pdf")
                 await post_report(interaction.client, content="📄 **Rapport patrimoine détaillé (30 jours)**",
@@ -1552,13 +1568,15 @@ if discord is not None:
         @discord.ui.button(label="Patrimoine total", emoji="🏦",
                            style=discord.ButtonStyle.primary, custom_id="nexus:patri", row=0)
         async def b_patri(self, interaction, button):
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            await refresh_bitget_state(HTTP_SESSION)   # Bitget frais (live + staking) avant le total
             c = consolidated_total()
             e = discord.Embed(title="🏦 Patrimoine total consolidé", color=GOLD,
                               description="# %s" % fmt_xof(c["total"]))
             e.add_field(name="📱 Mobile Money", value=fmt_xof(c["momo"]), inline=True)
             e.add_field(name="🏛 NSIA", value=fmt_xof(c["nsia"]), inline=True)
             e.add_field(name="📈 Bitget", value="%s\n(%s)" % (fmt_usd(c["bitget_usd"]), fmt_xof(c["bitget_xof"])), inline=True)
-            await interaction.response.send_message(embed=e, ephemeral=True)
+            await interaction.followup.send(embed=e, ephemeral=True)
 
         @discord.ui.button(label="Tout actualiser", emoji="✨",
                            style=discord.ButtonStyle.primary, custom_id="nexus:refreshall", row=1)
@@ -1611,6 +1629,7 @@ if discord is not None:
         async def b_pdf7(self, interaction, button):
             await interaction.response.defer(ephemeral=True, thinking=True)
             try:
+                await refresh_bitget_state(HTTP_SESSION)
                 data = build_pdf_report(7)
                 f = discord.File(io.BytesIO(data), filename="rapport_nexus_7j.pdf")
                 await post_report(interaction.client, content="🗒️ **Rapport patrimoine (7 jours)**",
@@ -1751,12 +1770,14 @@ async def run_discord(http_session):
 
     @tree.command(name="solde", description="Patrimoine total consolidé (MoMo + NSIA + Bitget)")
     async def _cmd_solde(interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await refresh_bitget_state(HTTP_SESSION)   # Bitget frais avant le total
         c = consolidated_total()
         e = discord.Embed(title="🏦 Patrimoine total", color=GOLD, description="# %s" % fmt_xof(c["total"]))
         e.add_field(name="📱 MoMo", value=fmt_xof(c["momo"]), inline=True)
         e.add_field(name="🏛 NSIA", value=fmt_xof(c["nsia"]), inline=True)
         e.add_field(name="📈 Bitget", value=fmt_usd(c["bitget_usd"]), inline=True)
-        await interaction.response.send_message(embed=e, ephemeral=True)
+        await interaction.followup.send(embed=e, ephemeral=True)
 
     @tree.command(name="bitget", description="Détail complet du compte Bitget")
     async def _cmd_bitget(interaction):
@@ -1808,6 +1829,7 @@ async def run_discord(http_session):
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             d = max(1, min(int(jours), 365))
+            await refresh_bitget_state(HTTP_SESSION)
             data = build_pdf_report(d)
             f = discord.File(io.BytesIO(data), filename="rapport_nexus_%dj.pdf" % d)
             await interaction.followup.send(content="📄 **Rapport patrimoine (%d jours)**" % d, file=f, ephemeral=True)
