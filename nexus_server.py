@@ -260,35 +260,33 @@ async def bitget_overview(session):
     # Fallback : si all-account-balance vide, total = somme des positions
     if not got_total or res["total"] <= 0:
         res["total"] = sum(v for _, _, v in res["holdings"])
-    # Applique le calage staking saisi par l'utilisateur (STATE["bg_calib"]) — le staking n'est PAS expose par l'API
+    # Calage : le STAKING / On-chain Earn n'est PAS expose par l'API Bitget.
+    # On AJOUTE le staking (STATE["bg_calib"]["staking"]) au live (spot + Earn flexible) au lieu de figer le total.
+    # -> le spot/earn reste live (trades, DCA, depots se voient tout seuls), seul le staking est fixe.
     try:
         calib = STATE.get("bg_calib") or {}
-        override = calib.get("override") or {}
+        staking = calib.get("staking") or {}
         extra = float(calib.get("extra", 0) or 0)
-        if override:
-            api_by_coin = {}
-            for c, amt, val in res["holdings"]:
-                base = str(c).split(" ")[0].upper()
-                a, v = api_by_coin.get(base, (0.0, 0.0))
-                api_by_coin[base] = (a + amt, v + val)
-            covered = set(str(k).upper() for k in override.keys())
-            new_total, new_holdings = 0.0, []
-            for coin, qty in override.items():
-                cu = str(coin).upper()
-                qf = float(qty or 0)
-                v = qf if cu in ("USDT", "USDC", "USD", "BUSD") else qf * prices.get(cu + "USDT", 0.0)
-                new_total += v
-                new_holdings.append((cu, qf, v))
-            for base, (amt, val) in api_by_coin.items():
-                if base not in covered:
-                    new_total += val
-                    new_holdings.append((base, amt, val))
-            res["holdings"] = new_holdings
-            res["total"] = new_total + extra
-            res["earn"] = max(0.0, res["total"] - res["spot"] - res["others"])
-        elif extra > 0:
-            res["total"] += extra
-            res["earn"] += extra
+        # Agrege les positions live par coin (spot + earn flexible -> une ligne par coin)
+        agg = {}
+        for c, amt, val in res["holdings"]:
+            base = str(c).split(" ")[0].upper()
+            a, v = agg.get(base, (0.0, 0.0))
+            agg[base] = (a + amt, v + val)
+        stk_val = 0.0
+        for coin, qty in (staking or {}).items():
+            cu = str(coin).upper()
+            qf = float(qty or 0)
+            if qf <= 0:
+                continue
+            v = qf if cu in ("USDT", "USDC", "USD", "BUSD") else qf * prices.get(cu + "USDT", 0.0)
+            a, vv = agg.get(cu, (0.0, 0.0))
+            agg[cu] = (a + qf, vv + v)   # quantite affichee = live + staking
+            stk_val += v
+        if staking:
+            res["holdings"] = [(c, a, v) for c, (a, v) in agg.items()]
+        res["total"] += stk_val + extra
+        res["earn"] = max(0.0, res["total"] - res["spot"] - res["others"])  # staking compte comme Earn
     except Exception as e:
         sys.stderr.write("[bitget] calib: %s\n" % e)
     res["holdings"].sort(key=lambda x: -x[2])
@@ -696,7 +694,7 @@ async def h_state(request):
         "momo": momo,
         "nsia": STATE["nsia"],
         "balances": STATE.get("balances") or {},
-        "bgCalib": STATE.get("bg_calib") or {"extra": 0, "override": {}},
+        "bgCalib": STATE.get("bg_calib") or {"extra": 0, "staking": {}},
         "updatedAt": STATE["updatedAt"],
     }))
 
@@ -710,11 +708,11 @@ async def h_bgcalib(request):
         try:
             body = await request.json()
             STATE["bg_calib"] = {"extra": float(body.get("extra", 0) or 0),
-                                 "override": body.get("override") or {}}
+                                 "staking": body.get("staking") or {}}
             save_state()
         except Exception as e:
             return cors(web.json_response({"ok": False, "error": str(e)}, status=400))
-    return cors(web.json_response({"ok": True, "bgCalib": STATE.get("bg_calib") or {"extra": 0, "override": {}}}))
+    return cors(web.json_response({"ok": True, "bgCalib": STATE.get("bg_calib") or {"extra": 0, "staking": {}}}))
 
 async def h_momo_ingest(request):
     """Reception d'un SMS MoMo depuis le telephone (MacroDroid).
