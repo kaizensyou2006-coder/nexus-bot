@@ -852,18 +852,21 @@ textarea.cinp::placeholder{color:var(--t3);}
   <div class="card"><div class="ch">Modèles automatiques</div><div id="rec-list"></div></div>
 </div>
 
-<!-- REVENUS & MRR -->
+<!-- REVENUS & DÉPENSES -->
 <div class="view" id="v-revenus">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px">
-    <div><div style="font-family:var(--fn);font-size:22px;font-weight:800;color:var(--gl)">Revenus &amp; MRR</div><div style="font-size:12px;color:var(--t2);font-family:var(--fm);margin-top:3px" id="rev-sub">—</div></div>
-    <button class="btn btn-gold" onclick="openRevModal(null)">+ Ajouter un revenu</button>
+    <div><div style="font-family:var(--fn);font-size:22px;font-weight:800;color:var(--gl)">Revenus &amp; Dépenses</div><div style="font-size:12px;color:var(--t2);font-family:var(--fm);margin-top:3px" id="rev-sub">—</div></div>
+    <button class="btn btn-gold" onclick="openTxModal(null)">+ Nouvelle opération</button>
   </div>
   <div class="kg" id="rev-kpis" style="margin-bottom:18px"></div>
   <div class="row-flex" style="display:flex;gap:16px;flex-wrap:wrap">
-    <div class="card" style="flex:2;min-width:280px"><div class="ch">📈 Chiffre d'affaires par mois (12 mois)</div><div class="chart-wrap ch-h2"><canvas id="c-rev-month"></canvas></div></div>
-    <div class="card" style="flex:1;min-width:240px"><div class="ch">🔁 Répartition MRR</div><div class="chart-wrap ch-h2"><canvas id="c-rev-mrr"></canvas></div><div id="rev-mrr-leg" style="margin-top:8px"></div></div>
+    <div class="card" style="flex:2;min-width:280px"><div class="ch">📊 Revenus vs Dépenses (12 mois)</div><div class="chart-wrap ch-h2"><canvas id="c-rev-month"></canvas></div></div>
+    <div class="card" style="flex:1;min-width:240px"><div class="ch">🍩 Dépenses par catégorie</div><div class="chart-wrap ch-h2"><canvas id="c-rev-cat"></canvas></div><div id="rev-cat-leg" style="margin-top:8px"></div></div>
   </div>
-  <div class="card" style="margin-top:16px"><div class="ch">Mes revenus</div><div id="rev-list"></div></div>
+  <div class="row-flex" style="display:flex;gap:16px;flex-wrap:wrap;margin-top:16px">
+    <div class="card" style="flex:1;min-width:260px"><div class="ch" style="color:var(--ok)">↑ Revenus par catégorie</div><div id="rev-inc-list"></div></div>
+    <div class="card" style="flex:1;min-width:260px"><div class="ch" style="color:var(--err)">↓ Dépenses par catégorie</div><div id="rev-exp-list"></div></div>
+  </div>
 </div>
 
 <!-- PRÉVISION CASHFLOW -->
@@ -1013,7 +1016,6 @@ textarea.cinp::placeholder{color:var(--t3);}
 <div class="ovl" id="ovl-watch"><div class="modal"><div id="ovl-watch-content"></div></div></div>
 <div class="ovl" id="ovl-momo"><div class="modal" style="max-width:680px"><div id="ovl-momo-content"></div></div></div>
 <div class="ovl" id="ovl-bgqty"><div class="modal" style="max-width:460px"><div id="ovl-bgqty-content"></div></div></div>
-<div class="ovl" id="ovl-rev"><div class="modal"><div id="ovl-rev-content"></div></div></div>
 
 <div class="ovl" id="ovl-buy">
   <div class="modal">
@@ -1094,8 +1096,8 @@ const PRXY=['https://corsproxy.io/?','https://api.allorigins.win/raw?url='];
 const CURRENCIES={XOF:{sym:'FCFA',name:'Franc CFA',dec:0},EUR:{sym:'€',name:'Euro',dec:2},USD:{sym:'$',name:'Dollar US',dec:2},GBP:{sym:'£',name:'Livre',dec:2},NGN:{sym:'₦',name:'Naira',dec:0},GHS:{sym:'₵',name:'Cedi',dec:2},BTC:{sym:'₿',name:'Bitcoin',dec:8},ETH:{sym:'Ξ',name:'Ethereum',dec:6}};
 const DEF_CATS=[{id:'c1',n:'Alimentation',ic:'🛒',col:'#EF4444',t:'exp'},{id:'c2',n:'Transport',ic:'🚗',col:'#3B82F6',t:'exp'},{id:'c3',n:'Logement',ic:'🏠',col:'#A855F7',t:'exp'},{id:'c4',n:'Santé',ic:'❤️',col:'#EC4899',t:'exp'},{id:'c5',n:'Loisirs',ic:'🎮',col:'#F97316',t:'exp'},{id:'c6',n:'Shopping',ic:'👗',col:'#14B8A6',t:'exp'},{id:'c7',n:'Éducation',ic:'📚',col:'#22C55E',t:'exp'},{id:'c8',n:'Investissement',ic:'📈',col:'#C9A227',t:'exp'},{id:'c9',n:'Famille',ic:'👨',col:'#8B5CF6',t:'exp'},{id:'c10',n:'Autres',ic:'💸',col:'#6B7280',t:'exp'},{id:'c11',n:'Salaire',ic:'💼',col:'#22C55E',t:'inc'},{id:'c12',n:'Freelance',ic:'💻',col:'#34D399',t:'inc'},{id:'c13',n:'Revenus agence',ic:'🏢',col:'#C9A227',t:'inc'},{id:'c14',n:'Gains crypto',ic:'₿',col:'#F59E0B',t:'inc'},{id:'c15',n:'Dividendes',ic:'📊',col:'#06B6D4',t:'inc'},{id:'c16',n:'Autres revenus',ic:'💰',col:'#4ADE80',t:'inc'}];
 const COLORS=['#C9A227','#EF4444','#3B82F6','#22C55E','#A855F7','#F97316','#14B8A6','#EC4899','#8B5CF6','#06B6D4','#84CC16','#F43F5E'];
-const NAV=[{id:'dashboard',ic:'🏠',lbl:'Tableau de bord',sect:'APERÇU'},{id:'transactions',ic:'💳',lbl:'Transactions',sect:'FINANCES'},{id:'calendar',ic:'📅',lbl:'Calendrier'},{id:'recurring',ic:'🔁',lbl:'Récurrents'},{id:'accounts',ic:'🏦',lbl:'Comptes'},{id:'budgets',ic:'🎯',lbl:'Budgets & Objectifs'},{id:'cashflow',ic:'🌊',lbl:'Prévision Cashflow'},{id:'reports',ic:'📊',lbl:'Rapports'},{id:'portfolio',ic:'💼',lbl:'Portefeuille',sect:'INVESTISSEMENTS'},{id:'watchlist',ic:'👁',lbl:'Watchlist'},{id:'bitget',ic:'🔗',lbl:'Bitget Connect'},{id:'live',ic:'📡',lbl:'Marchés Live'},{id:'dca',ic:'🤖',lbl:'DCA Automatique'},{id:'analyse',ic:'🔍',lbl:'Analyse & Signaux'},{id:'tax',ic:'📋',lbl:'Fiscalité'},{id:'revenus',ic:'💰',lbl:'Revenus & MRR',sect:'BUSINESS'},{id:'converter',ic:'💱',lbl:'Convertisseur',sect:'OUTILS'},{id:'ai',ic:'✨',lbl:'Assistant IA'},{id:'settings',ic:'⚙️',lbl:'Paramètres'}];
-const TITLES={dashboard:'Tableau de bord',transactions:'Transactions',calendar:'Calendrier',recurring:'Récurrents',accounts:'Comptes',budgets:'Budgets & Objectifs',cashflow:'Prévision Cashflow',reports:'Rapports',portfolio:'Portefeuille',watchlist:'Watchlist',bitget:'Bitget Connect',live:'Marchés Live',dca:'DCA Automatique',analyse:'Analyse & Signaux',tax:'Fiscalité',revenus:'Revenus & MRR',converter:'Convertisseur',ai:'Assistant IA',settings:'Paramètres'};
+const NAV=[{id:'dashboard',ic:'🏠',lbl:'Tableau de bord',sect:'APERÇU'},{id:'transactions',ic:'💳',lbl:'Transactions',sect:'FINANCES'},{id:'calendar',ic:'📅',lbl:'Calendrier'},{id:'recurring',ic:'🔁',lbl:'Récurrents'},{id:'accounts',ic:'🏦',lbl:'Comptes'},{id:'budgets',ic:'🎯',lbl:'Budgets & Objectifs'},{id:'cashflow',ic:'🌊',lbl:'Prévision Cashflow'},{id:'reports',ic:'📊',lbl:'Rapports'},{id:'portfolio',ic:'💼',lbl:'Portefeuille',sect:'INVESTISSEMENTS'},{id:'watchlist',ic:'👁',lbl:'Watchlist'},{id:'bitget',ic:'🔗',lbl:'Bitget Connect'},{id:'live',ic:'📡',lbl:'Marchés Live'},{id:'dca',ic:'🤖',lbl:'DCA Automatique'},{id:'analyse',ic:'🔍',lbl:'Analyse & Signaux'},{id:'tax',ic:'📋',lbl:'Fiscalité'},{id:'revenus',ic:'💰',lbl:'Revenus & Dépenses',sect:'BUSINESS'},{id:'converter',ic:'💱',lbl:'Convertisseur',sect:'OUTILS'},{id:'ai',ic:'✨',lbl:'Assistant IA'},{id:'settings',ic:'⚙️',lbl:'Paramètres'}];
+const TITLES={dashboard:'Tableau de bord',transactions:'Transactions',calendar:'Calendrier',recurring:'Récurrents',accounts:'Comptes',budgets:'Budgets & Objectifs',cashflow:'Prévision Cashflow',reports:'Rapports',portfolio:'Portefeuille',watchlist:'Watchlist',bitget:'Bitget Connect',live:'Marchés Live',dca:'DCA Automatique',analyse:'Analyse & Signaux',tax:'Fiscalité',revenus:'Revenus & Dépenses',converter:'Convertisseur',ai:'Assistant IA',settings:'Paramètres'};
 const FIN={data:{accounts:[],transactions:[],budgets:[],goals:[],debts:[],recurring:[],watchlist:[],categories:JSON.parse(JSON.stringify(DEF_CATS)),settings:{currency:'XOF',aiKey:'',jsonbinKey:'',jsonbinId:''}}};
 const INV={holdings:{},txHistory:[],dcas:[],spotBalance:0,goal:1000000,risk:'agressif',dcaBudget:300,currency:'USD',equityHistory:[],goalAlloc:{},manualPrices:{}};
 const UI={view:'dashboard',chatMsgs:[],chatBusy:false,fxRates:{},mktFilter:'all',charts:{},txf:{q:'',type:'all',acc:'all',cat:'all',period:'month'},rptPeriod:'month'};
@@ -1958,47 +1960,35 @@ function openRecModal(id){
 }
 function setRecTyp(el,typ){el.parentNode.querySelectorAll('.ttab').forEach(t=>t.classList.remove('active','exp','inc'));el.classList.add('active',typ);document.getElementById('rec-typ').value=typ;const cs=document.getElementById('rec-cat');if(cs)cs.innerHTML=FIN.data.categories.filter(c=>c.t===typ).map(c=>`<option value="${c.id}">${c.ic} ${esc(c.n)}</option>`).join('');}
 function saveRec(){const amt=parseFloat(document.getElementById('rec-amt').value);if(!amt||amt<=0){toast('Montant invalide','err');return;}if(!FIN.data.accounts.length){toast('Créez un compte d\'abord (Comptes)','err');return;}const id=document.getElementById('rec-edit-id').value;const r={id:id||uid(),type:document.getElementById('rec-typ').value,amount:amt,cur:document.getElementById('rec-cur').value,catId:document.getElementById('rec-cat').value,accId:document.getElementById('rec-acc').value,freq:document.getElementById('rec-freq').value,payee:document.getElementById('rec-payee').value||'',nextDate:document.getElementById('rec-next').value||today(),paused:id?(FIN.data.recurring.find(x=>x.id===id)?.paused||false):false};if(!FIN.data.recurring)FIN.data.recurring=[];if(id)FIN.data.recurring=FIN.data.recurring.map(x=>x.id===id?r:x);else FIN.data.recurring.push(r);processRecurring();finSave();closeOvl('ovl-rec');renderRecurring();updSbWealth();toast('Enregistré ✓','ok');}
-// ---------- REVENUS / MRR / ARR / CA ----------
-function revMonthlyEq(r){const a=convertAmt(r.amount||0,r.cur||cur(),cur());return r.recurring?(r.freq==='yearly'?a/12:a):0;}
-function revMRR(){return (FIN.data.revenues||[]).reduce((s,r)=>s+revMonthlyEq(r),0);}
-function revARR(){return revMRR()*12;}
-function revMonthsElapsed(date){if(!date)return 1;const d=new Date(date+'T00:00:00'),n=new Date();const m=(n.getFullYear()-d.getFullYear())*12+(n.getMonth()-d.getMonth());return Math.max(1,m+1);}
-function revCATotal(){return (FIN.data.revenues||[]).reduce((s,r)=>{const a=convertAmt(r.amount||0,r.cur||cur(),cur());return s+(r.recurring?revMonthlyEq(r)*revMonthsElapsed(r.date):a);},0);}
-function revCAForMonth(mk){return (FIN.data.revenues||[]).reduce((s,r)=>{if(r.recurring)return s+((monthKey(r.date)<=mk)?revMonthlyEq(r):0);return s+((monthKey(r.date)===mk)?convertAmt(r.amount||0,r.cur||cur(),cur()):0);},0);}
+// ---------- REVENUS & DÉPENSES (calculé sur les opérations enregistrées) ----------
+function recMonthlyByType(typ){return (FIN.data.recurring||[]).filter(r=>!r.paused&&r.type===typ).reduce((s,r)=>s+convertAmt(r.amount,r.cur||cur(),cur())*recMult(r.freq),0);}
+function txByCat(typ){const m={};(FIN.data.transactions||[]).filter(t=>t.type===typ).forEach(t=>{const a=convertAmt(t.amount,t.cur||cur(),cur());m[t.catId]=(m[t.catId]||0)+a;});return Object.entries(m).map(([id,v])=>({cat:getCat(id),val:v})).sort((a,b)=>b.val-a.val);}
 function renderRevenus(){
-  const revs=FIN.data.revenues||[];
-  const mrr=revMRR(),arr=revARR(),ca=revCATotal(),caM=revCAForMonth(thisMonth());
-  const recCount=revs.filter(r=>r.recurring).length;
-  const sub=document.getElementById('rev-sub');if(sub)sub.textContent=`${revs.length} revenu(s) · ${recCount} récurrent(s) · ARPU ${recCount?fmtM(mrr/recCount):'—'}`;
+  const txs=FIN.data.transactions||[];
+  const totalInc=txs.filter(t=>t.type==='inc').reduce((s,t)=>s+convertAmt(t.amount,t.cur||cur(),cur()),0);
+  const totalExp=txs.filter(t=>t.type==='exp').reduce((s,t)=>s+convertAmt(t.amount,t.cur||cur(),cur()),0);
+  const incM=getMonthInc(thisMonth()),expM=getMonthExp(thisMonth());
+  const mrr=recMonthlyByType('inc'),mrrExp=recMonthlyByType('exp');
+  const netM=incM-expM,net=totalInc-totalExp;
+  const savRate=incM>0?Math.round(netM/incM*100):0;
+  const nInc=txs.filter(t=>t.type==='inc').length,nExp=txs.filter(t=>t.type==='exp').length;
+  const sub=document.getElementById('rev-sub');if(sub)sub.textContent=`${nInc} revenu(s) · ${nExp} dépense(s) enregistrés · récurrent net ${fmtM(mrr-mrrExp)}/mois`;
   const k=document.getElementById('rev-kpis');if(k)k.innerHTML=[
-    {l:'MRR · revenu mensuel récurrent',v:fmtM(mrr),c:'var(--ok)'},
-    {l:'ARR · revenu annuel récurrent',v:fmtM(arr),c:'var(--ok)'},
-    {l:'CA total cumulé',v:fmtM(ca),c:'var(--gl)'},
-    {l:'CA ce mois',v:fmtM(caM),c:'var(--gl)'}
-  ].map(x=>`<div class="kc"><div class="kc-lbl">${x.l}</div><div class="kc-val" style="color:${x.c}">${x.v}</div></div>`).join('');
+    {l:'Revenus ce mois (CA)',v:fmtM(incM),s:'total '+fmtM(totalInc),c:'var(--ok)'},
+    {l:'Dépenses ce mois',v:fmtM(expM),s:'total '+fmtM(totalExp),c:'var(--err)'},
+    {l:'Résultat net (mois)',v:fmtM(netM),s:'net cumulé '+fmtM(net),c:netM>=0?'var(--ok)':'var(--err)'},
+    {l:'MRR · revenus récurrents',v:fmtM(mrr),s:'ARR '+fmtM(mrr*12),c:'var(--ok)'},
+    {l:'Taux d\'épargne (mois)',v:savRate+'%',s:'dép. récurrentes '+fmtM(mrrExp),c:savRate>=0?'var(--ok)':'var(--err)'}
+  ].map(x=>`<div class="kc"><div class="kc-lbl">${x.l}</div><div class="kc-val" style="color:${x.c}">${x.v}</div><div class="kc-sub">${x.s}</div></div>`).join('');
   const months=[];const d0=new Date();for(let i=11;i>=0;i--){const dd=new Date(d0.getFullYear(),d0.getMonth()-i,1);months.push(dd.toISOString().slice(0,7));}
-  mkChart('c-rev-month',{type:'bar',data:{labels:months.map(m=>m.slice(2)),datasets:[{label:'CA',data:months.map(m=>Math.round(revCAForMonth(m))),backgroundColor:'#16A34A',borderRadius:5,borderWidth:0}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>fmtM(+c.raw)}}},scales:sc(v=>fmtM(v))}});
-  const recs=revs.filter(r=>r.recurring&&revMonthlyEq(r)>0).sort((a,b)=>revMonthlyEq(b)-revMonthlyEq(a));
-  const COLZ=['#16A34A','#00AAE4','#C9A227','#7C3AED','#F59E0B','#EF4444','#14B8A6','#A78BFA'];
-  mkChart('c-rev-mrr',{type:'doughnut',data:{labels:recs.map(r=>r.label||'Revenu'),datasets:[{data:recs.map(r=>Math.round(revMonthlyEq(r))),backgroundColor:recs.map((_,i)=>COLZ[i%COLZ.length]),borderWidth:0,hoverOffset:6}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>c.label+': '+fmtM(+c.raw)+'/mois'}}},cutout:'66%'}});
-  const leg=document.getElementById('rev-mrr-leg');if(leg)leg.innerHTML=recs.slice(0,6).map((r,i)=>`<div style="display:flex;justify-content:space-between;padding:2.5px 0;font-size:11px"><span style="color:${COLZ[i%COLZ.length]};font-weight:600">● ${esc(r.label||'Revenu')}</span><span style="font-family:var(--fm);color:var(--t1)">${fmtM(revMonthlyEq(r))}/mois · ${mrr?Math.round(revMonthlyEq(r)/mrr*100):0}%</span></div>`).join('')||'<div style="color:var(--t2);font-size:11px;text-align:center;padding:8px">Aucun revenu récurrent</div>';
-  const list=document.getElementById('rev-list');if(!list)return;
-  if(!revs.length){list.innerHTML='<div class="empty"><div class="empty-ic">💰</div><div class="empty-tit">Aucun revenu</div><div style="color:var(--t2);font-size:12px;margin:6px 0 12px">Ajoute tes revenus (clients, abonnements, ventes…). Marque-les « récurrent » pour calculer ton MRR.</div><button class="btn btn-gold" onclick="openRevModal(null)">+ Ajouter</button></div>';return;}
-  list.innerHTML=revs.slice().sort((a,b)=>(b.date||'').localeCompare(a.date||'')).map(r=>{const tag=r.recurring?`<span style="font-size:9px;color:var(--ok);border:1px solid var(--ok);border-radius:4px;padding:1px 5px">🔁 ${r.freq==='yearly'?'/an':'/mois'}</span>`:'<span style="font-size:9px;color:var(--t2);border:1px solid var(--border2);border-radius:4px;padding:1px 5px">ponctuel</span>';return `<div class="txi"><div class="tx-ic" style="background:rgba(22,163,74,.12)">💰</div><div class="tx-info"><div class="tx-n">${esc(r.label||'Revenu')} ${tag}</div><div class="tx-m">${fmtDate(r.date,true)}${r.recurring?' · MRR '+fmtM(revMonthlyEq(r)):''}</div></div><div style="text-align:right"><div class="tx-a inc">+${fmtAmt(r.amount,r.cur||cur())}</div><div style="display:flex;gap:4px;justify-content:flex-end;margin-top:4px"><button class="btn btn-ghost btn-sm" style="padding:2px 7px" onclick="openRevModal('${r.id}')">✏</button><button class="btn btn-ghost btn-sm" style="padding:2px 7px;color:var(--err)" onclick="delRev('${r.id}')">🗑</button></div></div></div>`;}).join('');
+  mkChart('c-rev-month',{type:'bar',data:{labels:months.map(m=>m.slice(2)),datasets:[{label:'Revenus',data:months.map(m=>Math.round(getMonthInc(m))),backgroundColor:'#16A34A',borderRadius:4,borderWidth:0},{label:'Dépenses',data:months.map(m=>Math.round(getMonthExp(m))),backgroundColor:'#EF4444',borderRadius:4,borderWidth:0}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:true,labels:{color:'#9A9AB5',font:{size:10},boxWidth:10}},tooltip:{callbacks:{label:c=>c.dataset.label+': '+fmtM(+c.raw)}}},scales:sc(v=>fmtM(v))}});
+  const exC=txByCat('exp'),inC=txByCat('inc');
+  mkChart('c-rev-cat',{type:'doughnut',data:{labels:exC.map(x=>x.cat.n),datasets:[{data:exC.map(x=>Math.round(x.val)),backgroundColor:exC.map(x=>x.cat.col),borderWidth:0,hoverOffset:6}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>c.label+': '+fmtM(+c.raw)}}},cutout:'66%'}});
+  const leg=document.getElementById('rev-cat-leg');if(leg)leg.innerHTML=exC.slice(0,6).map(x=>`<div style="display:flex;justify-content:space-between;padding:2.5px 0;font-size:11px"><span style="color:${x.cat.col};font-weight:600">● ${x.cat.ic} ${esc(x.cat.n)}</span><span style="font-family:var(--fm);color:var(--t1)">${fmtM(x.val)} · ${totalExp?Math.round(x.val/totalExp*100):0}%</span></div>`).join('')||'<div style="color:var(--t2);font-size:11px;text-align:center;padding:8px">Aucune dépense</div>';
+  const renderCatList=(arr,tot,el,col)=>{const e=document.getElementById(el);if(!e)return;e.innerHTML=arr.length?arr.map(x=>`<div class="txi"><div class="tx-ic" style="background:${x.cat.col}18">${x.cat.ic}</div><div class="tx-info"><div class="tx-n">${esc(x.cat.n)}</div><div class="tx-m">${tot?Math.round(x.val/tot*100):0}% du total</div></div><div class="tx-a" style="color:${col};font-weight:700">${fmtM(x.val)}</div></div>`).join(''):'<div style="color:var(--t2);font-size:12px;text-align:center;padding:14px">Aucune opération</div>';};
+  renderCatList(inC,totalInc,'rev-inc-list','var(--ok)');
+  renderCatList(exC,totalExp,'rev-exp-list','var(--err)');
 }
-function openRevModal(id){
-  const r=id?(FIN.data.revenues||[]).find(x=>x.id===id):null;
-  document.getElementById('ovl-rev-content').innerHTML=`<div class="modal-hd"><div class="modal-ttl">${r?'Modifier':'Nouveau'} revenu</div><button class="xbtn" onclick="closeOvl('ovl-rev')">✕</button></div>
-  <div class="fg2"><div class="fl"><label>Montant</label><input type="number" class="fi" id="rev-amt" value="${r?.amount||''}" step="any" placeholder="0.00" autofocus></div><div class="fl"><label>Devise</label><select class="fi" id="rev-cur">${Object.keys(CURRENCIES).map(c=>`<option value="${c}"${(r?.cur||cur())===c?' selected':''}>${c}</option>`).join('')}</select></div></div>
-  <div class="fg"><div class="fl"><label>Libellé / source</label><input type="text" class="fi" id="rev-label" value="${esc(r?.label||'')}" placeholder="Client X, Abonnement Pro, Vente…"></div></div>
-  <div class="fg2"><div class="fl"><label>Date (début si récurrent)</label><input type="date" class="fi" id="rev-date" value="${r?.date||today()}"></div><div class="fl"><label>Type</label><select class="fi" id="rev-freq"><option value="once"${!r?.recurring?' selected':''}>Ponctuel (one-shot)</option><option value="monthly"${r?.recurring&&r?.freq!=='yearly'?' selected':''}>🔁 Récurrent / mois</option><option value="yearly"${r?.recurring&&r?.freq==='yearly'?' selected':''}>🔁 Récurrent / an</option></select></div></div>
-  <div style="font-size:11px;color:var(--t2);line-height:1.5;margin-top:4px">💡 « Récurrent » compte dans le <strong style="color:var(--ok)">MRR</strong> et le CA s'accumule chaque mois depuis la date de début. « Ponctuel » compte une fois dans le CA.</div>
-  <input type="hidden" id="rev-edit-id" value="${r?.id||''}">
-  <div class="btn-row"><button class="btn btn-ghost" onclick="closeOvl('ovl-rev')">Annuler</button><button class="btn btn-gold" onclick="saveRev()">✓ ${r?'Modifier':'Ajouter'}</button></div>`;
-  openOvl('ovl-rev');
-}
-function saveRev(){const amt=parseFloat(document.getElementById('rev-amt').value);if(!amt||amt<=0){toast('Montant invalide','err');return;}const id=document.getElementById('rev-edit-id').value;const f=document.getElementById('rev-freq').value;const r={id:id||uid(),amount:amt,cur:document.getElementById('rev-cur').value,label:document.getElementById('rev-label').value||'Revenu',date:document.getElementById('rev-date').value||today(),recurring:f!=='once',freq:f==='yearly'?'yearly':'monthly'};if(!FIN.data.revenues)FIN.data.revenues=[];if(id)FIN.data.revenues=FIN.data.revenues.map(x=>x.id===id?r:x);else FIN.data.revenues.push(r);finSave();closeOvl('ovl-rev');renderRevenus();updSbWealth();toast('Revenu enregistré ✓','ok');}
-function delRev(id){if(!confirm('Supprimer ce revenu ?'))return;FIN.data.revenues=(FIN.data.revenues||[]).filter(x=>x.id!==id);finSave();renderRevenus();toast('Supprimé','ok');}
 
 /* --- PRÉVISION CASHFLOW --- */
 function renderCashflow(){
