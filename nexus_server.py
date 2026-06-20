@@ -93,6 +93,7 @@ STATE = {
     "momo": [],
     "nsia": None,
     "bitget": None,      # {total, ts, holdings:[{coin,amt,val}]}
+    "business": None,    # resume revenus/depenses pousse par l'app : {revM,expM,netM,mrr,arr,caTotal,depTotal,cur,ts}
     "balances": {},      # soldes captures par reseau : {"mtn":..,"moov":..}
     "panel_msg": None,   # id du message du panneau de controle (pour le re-editer)
     "updatedAt": None,
@@ -681,6 +682,8 @@ async def h_state(request):
         try:
             body = await request.json()
             STATE["patrimoine"] = body.get("patrimoine", STATE["patrimoine"])
+            if body.get("business") is not None:
+                STATE["business"] = body.get("business")
             save_state()
         except Exception as e:
             return cors(web.json_response({"ok": False, "error": str(e)}, status=400))
@@ -920,6 +923,27 @@ async def refresh_bitget_state(session):
         sys.stderr.write("[bitget] refresh_state: %s\n" % e)
         return None
 
+def business_field():
+    """Texte du champ Revenus & Depenses (resume pousse par l'app), ou None."""
+    b = STATE.get("business") or {}
+    if not b:
+        return None
+    c = b.get("cur", "XOF")
+    def f(n):
+        try:
+            n = float(n or 0)
+        except Exception:
+            n = 0.0
+        if c == "XOF":
+            return fmt_xof(n)
+        return "%s %s" % (format(int(round(n)), ",d").replace(",", " "), c)
+    lines = ["Revenus (mois) : **%s**" % f(b.get("revM")),
+             "Dépenses (mois) : **%s**" % f(b.get("expM")),
+             "Net (mois) : **%s**" % f(b.get("netM"))]
+    if b.get("mrr"):
+        lines.append("MRR : **%s** · ARR %s" % (f(b.get("mrr")), f(b.get("arr"))))
+    return "\n".join(lines)
+
 def _bar(pct, width=12):
     """Barre de progression unicode pour les embeds Discord."""
     try:
@@ -1071,6 +1095,9 @@ if discord is not None:
             e.add_field(name="🏛 NSIA (OPCVM)",
                         value="**%s**\nmaj <t:%d:R>" % (fmt_xof(ns["total"]), int(ns.get("ts", 0) / 1000)),
                         inline=True)
+        bz = business_field()
+        if bz:
+            e.add_field(name="💼 Revenus & Dépenses (app)", value=bz, inline=True)
         try:
             ov = await bitget_overview(HTTP_SESSION)
         except Exception as ex:

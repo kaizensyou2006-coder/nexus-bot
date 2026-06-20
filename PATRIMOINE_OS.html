@@ -856,7 +856,7 @@ textarea.cinp::placeholder{color:var(--t3);}
 <div class="view" id="v-revenus">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px">
     <div><div style="font-family:var(--fn);font-size:22px;font-weight:800;color:var(--gl)">Revenus &amp; Dépenses</div><div style="font-size:12px;color:var(--t2);font-family:var(--fm);margin-top:3px" id="rev-sub">—</div></div>
-    <button class="btn btn-gold" onclick="openTxModal(null)">+ Nouvelle opération</button>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><div id="rev-period" style="display:flex;gap:4px;background:rgba(255,255,255,.04);padding:3px;border-radius:8px"></div><button class="btn btn-gold" onclick="openTxModal(null)">+ Nouvelle opération</button></div>
   </div>
   <div class="kg" id="rev-kpis" style="margin-bottom:18px"></div>
   <div class="row-flex" style="display:flex;gap:16px;flex-wrap:wrap">
@@ -1100,7 +1100,7 @@ const NAV=[{id:'dashboard',ic:'🏠',lbl:'Tableau de bord',sect:'APERÇU'},{id:'
 const TITLES={dashboard:'Tableau de bord',transactions:'Transactions',calendar:'Calendrier',recurring:'Récurrents',accounts:'Comptes',budgets:'Budgets & Objectifs',cashflow:'Prévision Cashflow',reports:'Rapports',portfolio:'Portefeuille',watchlist:'Watchlist',bitget:'Bitget Connect',live:'Marchés Live',dca:'DCA Automatique',analyse:'Analyse & Signaux',tax:'Fiscalité',revenus:'Revenus & Dépenses',converter:'Convertisseur',ai:'Assistant IA',settings:'Paramètres'};
 const FIN={data:{accounts:[],transactions:[],budgets:[],goals:[],debts:[],recurring:[],watchlist:[],categories:JSON.parse(JSON.stringify(DEF_CATS)),settings:{currency:'XOF',aiKey:'',jsonbinKey:'',jsonbinId:''}}};
 const INV={holdings:{},txHistory:[],dcas:[],spotBalance:0,goal:1000000,risk:'agressif',dcaBudget:300,currency:'USD',equityHistory:[],goalAlloc:{},manualPrices:{}};
-const UI={view:'dashboard',chatMsgs:[],chatBusy:false,fxRates:{},mktFilter:'all',charts:{},txf:{q:'',type:'all',acc:'all',cat:'all',period:'month'},rptPeriod:'month'};
+const UI={view:'dashboard',chatMsgs:[],chatBusy:false,fxRates:{},mktFilter:'all',charts:{},txf:{q:'',type:'all',acc:'all',cat:'all',period:'month'},rptPeriod:'month',revPeriod:'month'};
 let PRICES={},XOF=655.957,_liveTimer=null,_toastTimer=null;
 // BITGET
 // ┌─ INTÉGRATION DIRECTE — relie l'app à ton compte Bitget automatiquement.
@@ -1408,7 +1408,8 @@ function renderDash(){
   const bgAcc=FIN.data.accounts.find(a=>isBitgetAcc(a));
   const bgLbl=bgAcc?bgAcc.n:'Bitget';
   document.getElementById('d-sub').textContent=`Finances: ${fmtM(nw)}${bgUSD>0?' · '+bgLbl+': '+fm(bgUSD):''}`;
-  document.getElementById('d-row').innerHTML=`<div class="hero-stat"><div class="hs-lbl">REVENUS</div><div class="hs-val up">${fmtM(inc)}</div></div><div class="hero-stat"><div class="hs-lbl">DÉPENSES</div><div class="hs-val dn">${fmtM(exp)}</div></div><div class="hero-stat"><div class="hs-lbl">ÉPARGNE</div><div class="hs-val">${getSavRate()}%</div></div><div class="hero-stat"><div class="hs-lbl">P&L TOTAL</div><div class="hs-val ${pnl>=0?'up':'dn'}">${fm(pnl)}</div></div><div class="hero-stat"><div class="hs-lbl">INVESTI</div><div class="hs-val">${fm(tinv)}</div></div>`;
+  const _mrr=(typeof recMonthlyByType==='function')?recMonthlyByType('inc'):0;
+  document.getElementById('d-row').innerHTML=`<div class="hero-stat"><div class="hs-lbl">REVENUS</div><div class="hs-val up">${fmtM(inc)}</div></div><div class="hero-stat"><div class="hs-lbl">DÉPENSES</div><div class="hs-val dn">${fmtM(exp)}</div></div><div class="hero-stat"><div class="hs-lbl">ÉPARGNE</div><div class="hs-val">${getSavRate()}%</div></div>${_mrr>0?`<div class="hero-stat" style="cursor:pointer" onclick="go('revenus')"><div class="hs-lbl">MRR</div><div class="hs-val up">${fmtM(_mrr)}</div></div>`:''}<div class="hero-stat"><div class="hs-lbl">P&L TOTAL</div><div class="hs-val ${pnl>=0?'up':'dn'}">${fm(pnl)}</div></div><div class="hero-stat"><div class="hs-lbl">INVESTI</div><div class="hs-val">${fm(tinv)}</div></div>`;
   if(INV.goal>0){const pt=Math.min(100,(bgUSD/INV.goal)*100);document.getElementById('d-goal-wrap').style.display='block';document.getElementById('d-goal-pct').textContent=pt.toFixed(1)+'% de '+fm(INV.goal);document.getElementById('d-goal-bar').style.width=pt+'%';}
   document.getElementById('d-kpis').innerHTML=[{lbl:'Net Worth finances',val:fmtM(nw),sub:fmtM(inc-exp)+' cashflow (hors Bitget)',cls:inc>exp?'up':'dn'},{lbl:'Portefeuille invest.',val:fm(pv),sub:(pnl>=0?'▲ ':'')+fm(Math.abs(pnl))+' P&L',cls:pnl>=0?'up':'dn'},{lbl:'Total Bitget',val:fm(typeof bitgetTotalUSD==='function'?bitgetTotalUSD():pv),sub:'spot + earn live',cls:'ne'},{lbl:'Taux épargne',val:getSavRate()+'%',sub:'Ce mois',cls:getSavRate()>=20?'up':getSavRate()>=10?'ne':'dn'}].map((k,i)=>`<div class="kc" style="animation-delay:${i*0.05}s"><div class="kc-lbl">${k.lbl}</div><div class="kc-val">${k.val}</div><div class="kc-sub ${k.cls}">${k.sub}</div></div>`).join('');
   const m6=[];for(let i=5;i>=0;i--){const d=new Date();d.setMonth(d.getMonth()-i);m6.push(d.toISOString().slice(0,7));}
@@ -1962,24 +1963,37 @@ function setRecTyp(el,typ){el.parentNode.querySelectorAll('.ttab').forEach(t=>t.
 function saveRec(){const amt=parseFloat(document.getElementById('rec-amt').value);if(!amt||amt<=0){toast('Montant invalide','err');return;}if(!FIN.data.accounts.length){toast('Créez un compte d\'abord (Comptes)','err');return;}const id=document.getElementById('rec-edit-id').value;const r={id:id||uid(),type:document.getElementById('rec-typ').value,amount:amt,cur:document.getElementById('rec-cur').value,catId:document.getElementById('rec-cat').value,accId:document.getElementById('rec-acc').value,freq:document.getElementById('rec-freq').value,payee:document.getElementById('rec-payee').value||'',nextDate:document.getElementById('rec-next').value||today(),paused:id?(FIN.data.recurring.find(x=>x.id===id)?.paused||false):false};if(!FIN.data.recurring)FIN.data.recurring=[];if(id)FIN.data.recurring=FIN.data.recurring.map(x=>x.id===id?r:x);else FIN.data.recurring.push(r);processRecurring();finSave();closeOvl('ovl-rec');renderRecurring();updSbWealth();toast('Enregistré ✓','ok');}
 // ---------- REVENUS & DÉPENSES (calculé sur les opérations enregistrées) ----------
 function recMonthlyByType(typ){return (FIN.data.recurring||[]).filter(r=>!r.paused&&r.type===typ).reduce((s,r)=>s+convertAmt(r.amount,r.cur||cur(),cur())*recMult(r.freq),0);}
-function txByCat(typ){const m={};(FIN.data.transactions||[]).filter(t=>t.type===typ).forEach(t=>{const a=convertAmt(t.amount,t.cur||cur(),cur());m[t.catId]=(m[t.catId]||0)+a;});return Object.entries(m).map(([id,v])=>({cat:getCat(id),val:v})).sort((a,b)=>b.val-a.val);}
+function revPeriodLabel(p){return {month:'Ce mois','3m':'3 mois',year:'Année',all:'Tout'}[p]||p;}
+function txInRevPeriod(t){const p=UI.revPeriod||'month';if(p==='all')return true;if(p==='month')return monthKey(t.date)===thisMonth();if(p==='year')return (t.date||'').startsWith(today().slice(0,4));if(p==='3m'){const d=new Date();d.setMonth(d.getMonth()-3);return new Date(t.date)>=d;}return true;}
+function setRevPeriod(p){UI.revPeriod=p;renderRevenus();}
+function txByCat(typ){const m={};(FIN.data.transactions||[]).filter(t=>t.type===typ&&txInRevPeriod(t)).forEach(t=>{const a=convertAmt(t.amount,t.cur||cur(),cur());m[t.catId]=(m[t.catId]||0)+a;});return Object.entries(m).map(([id,v])=>({cat:getCat(id),val:v})).sort((a,b)=>b.val-a.val);}
+function avgMonthlyExp(n=3){let s=0;for(let i=0;i<n;i++){const dd=new Date();dd.setMonth(dd.getMonth()-i);s+=getMonthExp(dd.toISOString().slice(0,7));}return s/n;}
+function bizSummary(){const tx=FIN.data.transactions||[];const ci=tx.filter(t=>t.type==='inc').reduce((s,t)=>s+convertAmt(t.amount,t.cur||cur(),cur()),0);const ce=tx.filter(t=>t.type==='exp').reduce((s,t)=>s+convertAmt(t.amount,t.cur||cur(),cur()),0);const mrr=recMonthlyByType('inc');return {revM:Math.round(getMonthInc(thisMonth())),expM:Math.round(getMonthExp(thisMonth())),netM:Math.round(getMonthInc(thisMonth())-getMonthExp(thisMonth())),mrr:Math.round(mrr),arr:Math.round(mrr*12),caTotal:Math.round(ci),depTotal:Math.round(ce),cur:cur(),ts:Date.now()};}
+function nexusBizPush(){try{const srv=(typeof nexusSrv==='function')?nexusSrv():'';if(!srv)return;fetch(srv+'/state?token='+encodeURIComponent(typeof nexusTok==='function'?nexusTok():''),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({business:bizSummary()})}).then(()=>{},()=>{});}catch(e){}}
 function renderRevenus(){
   const txs=FIN.data.transactions||[];
+  const pl=revPeriodLabel(UI.revPeriod||'month');
+  const pseg=document.getElementById('rev-period');if(pseg)pseg.innerHTML=['month','3m','year','all'].map(p=>`<div onclick="setRevPeriod('${p}')" style="cursor:pointer;padding:5px 11px;border-radius:6px;font-size:11px;font-weight:600;transition:.15s;${(UI.revPeriod||'month')===p?'background:var(--g);color:#0b0b0f':'color:var(--t2)'}">${revPeriodLabel(p)}</div>`).join('');
+  const inPer=t=>txInRevPeriod(t);
+  const incP=txs.filter(t=>t.type==='inc'&&inPer(t)).reduce((s,t)=>s+convertAmt(t.amount,t.cur||cur(),cur()),0);
+  const expP=txs.filter(t=>t.type==='exp'&&inPer(t)).reduce((s,t)=>s+convertAmt(t.amount,t.cur||cur(),cur()),0);
   const totalInc=txs.filter(t=>t.type==='inc').reduce((s,t)=>s+convertAmt(t.amount,t.cur||cur(),cur()),0);
   const totalExp=txs.filter(t=>t.type==='exp').reduce((s,t)=>s+convertAmt(t.amount,t.cur||cur(),cur()),0);
-  const incM=getMonthInc(thisMonth()),expM=getMonthExp(thisMonth());
   const mrr=recMonthlyByType('inc'),mrrExp=recMonthlyByType('exp');
-  const netM=incM-expM,net=totalInc-totalExp;
-  const savRate=incM>0?Math.round(netM/incM*100):0;
+  const netP=incP-expP;
+  const savRate=incP>0?Math.round(netP/incP*100):0;
+  const aExp=avgMonthlyExp(3),nw=(typeof getNetWorth==='function')?getNetWorth():0;
+  const runway=aExp>0?nw/aExp:0;
   const nInc=txs.filter(t=>t.type==='inc').length,nExp=txs.filter(t=>t.type==='exp').length;
-  const sub=document.getElementById('rev-sub');if(sub)sub.textContent=`${nInc} revenu(s) · ${nExp} dépense(s) enregistrés · récurrent net ${fmtM(mrr-mrrExp)}/mois`;
+  const sub=document.getElementById('rev-sub');if(sub)sub.textContent=`${nInc} revenu(s) · ${nExp} dépense(s) · période : ${pl} · récurrent net ${fmtM(mrr-mrrExp)}/mois`;
   const k=document.getElementById('rev-kpis');if(k)k.innerHTML=[
-    {l:'Revenus ce mois (CA)',v:fmtM(incM),s:'total '+fmtM(totalInc),c:'var(--ok)'},
-    {l:'Dépenses ce mois',v:fmtM(expM),s:'total '+fmtM(totalExp),c:'var(--err)'},
-    {l:'Résultat net (mois)',v:fmtM(netM),s:'net cumulé '+fmtM(net),c:netM>=0?'var(--ok)':'var(--err)'},
+    {l:'Revenus (CA) · '+pl,v:fmtM(incP),s:'cumul total '+fmtM(totalInc),c:'var(--ok)'},
+    {l:'Dépenses · '+pl,v:fmtM(expP),s:'cumul total '+fmtM(totalExp),c:'var(--err)'},
+    {l:'Résultat net · '+pl,v:fmtM(netP),s:'taux épargne '+savRate+'%',c:netP>=0?'var(--ok)':'var(--err)'},
     {l:'MRR · revenus récurrents',v:fmtM(mrr),s:'ARR '+fmtM(mrr*12),c:'var(--ok)'},
-    {l:'Taux d\'épargne (mois)',v:savRate+'%',s:'dép. récurrentes '+fmtM(mrrExp),c:savRate>=0?'var(--ok)':'var(--err)'}
+    {l:'Autonomie (runway)',v:aExp>0?(runway>=99?'99+':runway.toFixed(1))+' mois':'∞',s:'trésorerie '+fmtM(nw),c:runway>=6||aExp<=0?'var(--ok)':runway>=3?'var(--g)':'var(--err)'}
   ].map(x=>`<div class="kc"><div class="kc-lbl">${x.l}</div><div class="kc-val" style="color:${x.c}">${x.v}</div><div class="kc-sub">${x.s}</div></div>`).join('');
+  if(typeof nexusBizPush==='function')nexusBizPush();
   const months=[];const d0=new Date();for(let i=11;i>=0;i--){const dd=new Date(d0.getFullYear(),d0.getMonth()-i,1);months.push(dd.toISOString().slice(0,7));}
   mkChart('c-rev-month',{type:'bar',data:{labels:months.map(m=>m.slice(2)),datasets:[{label:'Revenus',data:months.map(m=>Math.round(getMonthInc(m))),backgroundColor:'#16A34A',borderRadius:4,borderWidth:0},{label:'Dépenses',data:months.map(m=>Math.round(getMonthExp(m))),backgroundColor:'#EF4444',borderRadius:4,borderWidth:0}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:true,labels:{color:'#9A9AB5',font:{size:10},boxWidth:10}},tooltip:{callbacks:{label:c=>c.dataset.label+': '+fmtM(+c.raw)}}},scales:sc(v=>fmtM(v))}});
   const exC=txByCat('exp'),inC=txByCat('inc');
@@ -2220,6 +2234,7 @@ document.addEventListener('DOMContentLoaded',()=>{
   setInterval(()=>{if(bgConnected()&&BITGET.autoSync!==false&&document.visibilityState==='visible')syncBitget();},5*60*1000);
   // Calage Bitget (staking) partagé entre appareils : on le récupère du serveur au démarrage + toutes les 5 min
   setTimeout(()=>bgCalibPull(true),3500);setInterval(()=>{if(document.visibilityState==='visible')bgCalibPull(true);},5*60*1000);
+  setTimeout(()=>{if(typeof nexusBizPush==='function')nexusBizPush();},5000);setInterval(()=>{if(typeof nexusBizPush==='function')nexusBizPush();},10*60*1000);
   if(_liveTimer)clearInterval(_liveTimer);_liveTimer=setInterval(updateLiveStatus,30000);
   fetchXOF().then(()=>{
   refreshPrices(true);
