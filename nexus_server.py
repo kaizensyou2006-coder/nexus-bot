@@ -1802,8 +1802,17 @@ async def run_discord(http_session):
     async def _cmd_momo(interaction):
         await interaction.response.send_message(embed=build_momo_embed(), ephemeral=True)
 
-    @tree.command(name="nsia", description="Portefeuille NSIA (OPCVM)")
-    async def _cmd_nsia(interaction):
+    @tree.command(name="nsia", description="Portefeuille NSIA (OPCVM) — montant pour corriger le total à la main")
+    @discord.app_commands.describe(montant="(Optionnel) Corriger le total NSIA en FCFA, ex: 217986.13")
+    async def _cmd_nsia(interaction, montant: float = 0.0):
+        if montant and montant > 0:
+            ns = STATE.get("nsia") or {"source": "nsia", "cur": "XOF", "operations": []}
+            ns = dict(ns)
+            ns["total"] = float(montant)
+            ns["ts"] = int(time.time() * 1000)
+            ns["manual"] = True
+            STATE["nsia"] = ns
+            save_state()
         await interaction.response.send_message(embed=build_nsia_embed(), ephemeral=True)
 
     @tree.command(name="etat", description="État du serveur NEXUS (uptime, Discord, données)")
