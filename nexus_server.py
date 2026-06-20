@@ -633,7 +633,7 @@ def parse_pdf_bytes(data):
     return None, text
 
 # ----------------------- OCR image (ocr.space) -----------------------
-async def ocr_image(session, data, filename):
+async def ocr_image(session, data, filename, is_pdf=False):
     if not OCR_API_KEY:
         return ""
     form = aiohttp.FormData()
@@ -643,8 +643,10 @@ async def ocr_image(session, data, filename):
     form.add_field("scale", "true")
     form.add_field("isTable", "true")
     form.add_field("detectOrientation", "true")
-    form.add_field("file", data, filename=filename or "img.png",
-                   content_type="application/octet-stream")
+    if is_pdf:
+        form.add_field("filetype", "PDF")   # ocr.space sait OCR-iser un PDF scanné directement
+    form.add_field("file", data, filename=filename or ("doc.pdf" if is_pdf else "img.png"),
+                   content_type="application/pdf" if is_pdf else "application/octet-stream")
     try:
         async with session.post("https://api.ocr.space/parse/image", data=form,
                                 timeout=aiohttp.ClientTimeout(total=40)) as r:
@@ -1712,6 +1714,15 @@ if discord is not None:
                 save_state()
                 await message.add_reaction("✅")
                 return "🗂 Patrimoine mis à jour depuis le PDF."
+            # PDF scanné / image (ex: document WhatsApp) -> pas de texte extractible -> OCR de secours
+            if (not text or len(text.strip()) < 40):
+                if OCR_API_KEY:
+                    ocr_txt = await ocr_image(HTTP_SESSION, data, att.filename, is_pdf=True)
+                    if ocr_txt and len(ocr_txt.strip()) > len(text.strip()):
+                        text = ocr_txt
+                else:
+                    await message.add_reaction("❓")
+                    return "📄 PDF sans texte (scanné). Ajoute la variable **OCR_API_KEY** au serveur pour l'analyser automatiquement."
             nsia = parse_nsia(text)
             if nsia:
                 set_nsia(nsia)
@@ -1719,7 +1730,7 @@ if discord is not None:
                 return "🏛 NSIA : total portefeuille **%s**." % fmt_xof(nsia["total"])
             n = add_momo(parse_momo_text(text))
             await message.add_reaction("📄")
-            return ("📄 **%d** opération(s) détectée(s) dans le PDF." % n) if n else "📄 Aucune opération détectée dans le PDF."
+            return ("📄 **%d** opération(s) détectée(s) dans le PDF." % n) if n else "📄 Aucune opération détectée dans le PDF (texte illisible)."
         if name.endswith((".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")):
             if not OCR_API_KEY:
                 await message.add_reaction("❓")
@@ -1924,10 +1935,17 @@ async def run_discord(http_session):
                 emb.add_field(name="Solde MoMo cumulé (net)", value=fmt_xof(net), inline=True)
                 emb.add_field(name="Opérations enregistrées", value=str(cnt), inline=True)
                 emb.set_footer(text="Importé automatiquement sur ton dashboard")
-                # Retour posté dans le salon de RAPPORTS (REPORT_CHANNEL) avec boutons ✅/❌
-                posted = await post_report(client, embed=emb, view=ReportActionView())
-                if posted is None:
+                # Réponse VISIBLE directement sous le fichier déposé (salon d'import)
+                try:
+                    await message.reply(embed=emb, mention_author=False)
+                except Exception:
                     await message.channel.send(embed=emb)
+                # + copie dans le salon de RAPPORTS avec boutons ✅/❌ (si configuré et différent)
+                try:
+                    if REPORT_CHANNEL and str(REPORT_CHANNEL) != str(import_chan_id):
+                        await post_report(client, embed=emb, view=ReportActionView())
+                except Exception:
+                    pass
         except Exception as e:
             sys.stderr.write("[discord] on_message err: %s\n" % e)
 
