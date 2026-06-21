@@ -871,6 +871,40 @@ textarea.cinp::placeholder{color:var(--t3);}
   <div id="rev-detail"></div>
 </div>
 
+<!-- NSIA OPCVM -->
+<div class="view" id="v-nsia">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px">
+    <div><div style="font-family:var(--fn);font-size:22px;font-weight:800;color:#E8BC3A">🏛 NSIA OPCVM</div><div style="font-size:12px;color:var(--t2);font-family:var(--fm);margin-top:3px" id="nsia-sub">—</div></div>
+    <button class="btn btn-ghost btn-sm" onclick="editNSIA()">✏ Ajuster les parts</button>
+  </div>
+  <div id="nsia-empty" style="display:none"></div>
+  <div id="nsia-body">
+    <div class="kg" id="nsia-kpis" style="margin-bottom:18px"></div>
+    <div class="row-flex" style="display:flex;gap:16px;flex-wrap:wrap">
+      <div class="card" style="flex:2;min-width:280px"><div class="ch">📈 Apports & valorisation</div><div class="chart-wrap ch-h2"><canvas id="c-nsia-evo"></canvas></div></div>
+      <div class="card" style="flex:1;min-width:240px"><div class="ch">🥧 Composition (investi / plus-value)</div><div class="chart-wrap ch-h2"><canvas id="c-nsia-pv"></canvas></div><div id="nsia-pv-leg" style="margin-top:8px"></div></div>
+    </div>
+    <div class="card" style="margin-top:16px"><div class="ch">Historique des opérations</div><div id="nsia-ops"></div></div>
+  </div>
+</div>
+
+<!-- MOMO / MOOV -->
+<div class="view" id="v-momo">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px">
+    <div><div style="font-family:var(--fn);font-size:22px;font-weight:800;color:#FFCC00">📱 MoMo / Moov</div><div style="font-size:12px;color:var(--t2);font-family:var(--fm);margin-top:3px" id="momo-sub">—</div></div>
+    <button class="btn btn-gold btn-sm" onclick="openMomoModal&&openMomoModal()">📥 Importer</button>
+  </div>
+  <div id="momo-empty" style="display:none"></div>
+  <div id="momo-body">
+    <div class="kg" id="momo-kpis" style="margin-bottom:18px"></div>
+    <div class="row-flex" style="display:flex;gap:16px;flex-wrap:wrap">
+      <div class="card" style="flex:2;min-width:280px"><div class="ch">📊 Entrées vs Sorties (12 mois)</div><div class="chart-wrap ch-h2"><canvas id="c-momo-flow"></canvas></div></div>
+      <div class="card" style="flex:1;min-width:240px"><div class="ch">🥧 Répartition réseau</div><div class="chart-wrap ch-h2"><canvas id="c-momo-net"></canvas></div><div id="momo-net-leg" style="margin-top:8px"></div></div>
+    </div>
+    <div class="card" style="margin-top:16px"><div class="ch">Dernières opérations</div><div id="momo-ops" style="max-height:420px;overflow-y:auto"></div></div>
+  </div>
+</div>
+
 <!-- PRÉVISION CASHFLOW -->
 <div class="view" id="v-cashflow">
   <div style="margin-bottom:18px"><div style="font-family:var(--fn);font-size:22px;font-weight:800;color:var(--gl)">Prévision Cashflow</div><div style="font-size:12px;color:var(--t2);font-family:var(--fm);margin-top:3px">Projection de ton patrimoine sur 6 mois à partir de tes récurrents</div></div>
@@ -1098,8 +1132,8 @@ const PRXY=['https://corsproxy.io/?','https://api.allorigins.win/raw?url='];
 const CURRENCIES={XOF:{sym:'FCFA',name:'Franc CFA',dec:0},EUR:{sym:'€',name:'Euro',dec:2},USD:{sym:'$',name:'Dollar US',dec:2},GBP:{sym:'£',name:'Livre',dec:2},NGN:{sym:'₦',name:'Naira',dec:0},GHS:{sym:'₵',name:'Cedi',dec:2},BTC:{sym:'₿',name:'Bitcoin',dec:8},ETH:{sym:'Ξ',name:'Ethereum',dec:6}};
 const DEF_CATS=[{id:'c1',n:'Alimentation',ic:'🛒',col:'#EF4444',t:'exp'},{id:'c2',n:'Transport',ic:'🚗',col:'#3B82F6',t:'exp'},{id:'c3',n:'Logement',ic:'🏠',col:'#A855F7',t:'exp'},{id:'c4',n:'Santé',ic:'❤️',col:'#EC4899',t:'exp'},{id:'c5',n:'Loisirs',ic:'🎮',col:'#F97316',t:'exp'},{id:'c6',n:'Shopping',ic:'👗',col:'#14B8A6',t:'exp'},{id:'c7',n:'Éducation',ic:'📚',col:'#22C55E',t:'exp'},{id:'c8',n:'Investissement',ic:'📈',col:'#C9A227',t:'exp'},{id:'c9',n:'Famille',ic:'👨',col:'#8B5CF6',t:'exp'},{id:'c10',n:'Autres',ic:'💸',col:'#6B7280',t:'exp'},{id:'c11',n:'Salaire',ic:'💼',col:'#22C55E',t:'inc'},{id:'c12',n:'Freelance',ic:'💻',col:'#34D399',t:'inc'},{id:'c13',n:'Revenus agence',ic:'🏢',col:'#C9A227',t:'inc'},{id:'c14',n:'Gains crypto',ic:'₿',col:'#F59E0B',t:'inc'},{id:'c15',n:'Dividendes',ic:'📊',col:'#06B6D4',t:'inc'},{id:'c16',n:'Autres revenus',ic:'💰',col:'#4ADE80',t:'inc'}];
 const COLORS=['#C9A227','#EF4444','#3B82F6','#22C55E','#A855F7','#F97316','#14B8A6','#EC4899','#8B5CF6','#06B6D4','#84CC16','#F43F5E'];
-const NAV=[{id:'dashboard',ic:'🏠',lbl:'Tableau de bord',sect:'APERÇU'},{id:'transactions',ic:'💳',lbl:'Transactions',sect:'FINANCES'},{id:'calendar',ic:'📅',lbl:'Calendrier'},{id:'recurring',ic:'🔁',lbl:'Récurrents'},{id:'accounts',ic:'🏦',lbl:'Comptes'},{id:'budgets',ic:'🎯',lbl:'Budgets & Objectifs'},{id:'cashflow',ic:'🌊',lbl:'Prévision Cashflow'},{id:'reports',ic:'📊',lbl:'Rapports'},{id:'portfolio',ic:'💼',lbl:'Portefeuille',sect:'INVESTISSEMENTS'},{id:'watchlist',ic:'👁',lbl:'Watchlist'},{id:'bitget',ic:'🔗',lbl:'Bitget Connect'},{id:'live',ic:'📡',lbl:'Marchés Live'},{id:'dca',ic:'🤖',lbl:'DCA Automatique'},{id:'analyse',ic:'🔍',lbl:'Analyse & Signaux'},{id:'tax',ic:'📋',lbl:'Fiscalité'},{id:'revenus',ic:'💰',lbl:'Revenus & Dépenses',sect:'BUSINESS'},{id:'converter',ic:'💱',lbl:'Convertisseur',sect:'OUTILS'},{id:'ai',ic:'✨',lbl:'Assistant IA'},{id:'settings',ic:'⚙️',lbl:'Paramètres'}];
-const TITLES={dashboard:'Tableau de bord',transactions:'Transactions',calendar:'Calendrier',recurring:'Récurrents',accounts:'Comptes',budgets:'Budgets & Objectifs',cashflow:'Prévision Cashflow',reports:'Rapports',portfolio:'Portefeuille',watchlist:'Watchlist',bitget:'Bitget Connect',live:'Marchés Live',dca:'DCA Automatique',analyse:'Analyse & Signaux',tax:'Fiscalité',revenus:'Revenus & Dépenses',converter:'Convertisseur',ai:'Assistant IA',settings:'Paramètres'};
+const NAV=[{id:'dashboard',ic:'🏠',lbl:'Tableau de bord',sect:'APERÇU'},{id:'transactions',ic:'💳',lbl:'Transactions',sect:'FINANCES'},{id:'calendar',ic:'📅',lbl:'Calendrier'},{id:'recurring',ic:'🔁',lbl:'Récurrents'},{id:'accounts',ic:'🏦',lbl:'Comptes'},{id:'budgets',ic:'🎯',lbl:'Budgets & Objectifs'},{id:'cashflow',ic:'🌊',lbl:'Prévision Cashflow'},{id:'reports',ic:'📊',lbl:'Rapports'},{id:'momo',ic:'📱',lbl:'MoMo / Moov'},{id:'portfolio',ic:'💼',lbl:'Portefeuille',sect:'INVESTISSEMENTS'},{id:'nsia',ic:'🏛',lbl:'NSIA OPCVM'},{id:'watchlist',ic:'👁',lbl:'Watchlist'},{id:'bitget',ic:'🔗',lbl:'Bitget Connect'},{id:'live',ic:'📡',lbl:'Marchés Live'},{id:'dca',ic:'🤖',lbl:'DCA Automatique'},{id:'analyse',ic:'🔍',lbl:'Analyse & Signaux'},{id:'tax',ic:'📋',lbl:'Fiscalité'},{id:'revenus',ic:'💰',lbl:'Revenus & Dépenses',sect:'BUSINESS'},{id:'converter',ic:'💱',lbl:'Convertisseur',sect:'OUTILS'},{id:'ai',ic:'✨',lbl:'Assistant IA'},{id:'settings',ic:'⚙️',lbl:'Paramètres'}];
+const TITLES={dashboard:'Tableau de bord',transactions:'Transactions',calendar:'Calendrier',recurring:'Récurrents',accounts:'Comptes',budgets:'Budgets & Objectifs',cashflow:'Prévision Cashflow',reports:'Rapports',portfolio:'Portefeuille',watchlist:'Watchlist',bitget:'Bitget Connect',live:'Marchés Live',dca:'DCA Automatique',analyse:'Analyse & Signaux',tax:'Fiscalité',revenus:'Revenus & Dépenses',momo:'MoMo / Moov',nsia:'NSIA OPCVM',converter:'Convertisseur',ai:'Assistant IA',settings:'Paramètres'};
 const FIN={data:{accounts:[],transactions:[],budgets:[],goals:[],debts:[],recurring:[],watchlist:[],categories:JSON.parse(JSON.stringify(DEF_CATS)),settings:{currency:'XOF',aiKey:'',jsonbinKey:'',jsonbinId:''}}};
 const INV={holdings:{},txHistory:[],dcas:[],spotBalance:0,goal:1000000,risk:'agressif',dcaBudget:300,currency:'USD',equityHistory:[],goalAlloc:{},manualPrices:{}};
 const UI={view:'dashboard',chatMsgs:[],chatBusy:false,fxRates:{},mktFilter:'all',charts:{},txf:{q:'',type:'all',acc:'all',cat:'all',period:'month'},rptPeriod:'month',revPeriod:'month'};
@@ -1389,7 +1423,7 @@ function mkChart(id,cfg){const c=document.getElementById(id);if(!c)return;if(UI.
 function sc(yFn){return{x:{grid:{color:'rgba(255,255,255,0.03)'},ticks:{color:'#5A5A7A',font:{size:10}}},y:{grid:{color:'rgba(255,255,255,0.04)'},ticks:{color:'#5A5A7A',font:{size:10},callback:yFn}}};}
 // NAVIGATION
 function renderNav(){document.getElementById('sb-nav').innerHTML=NAV.map(item=>{const s=item.sect?`<div class="sb-sec">${item.sect}</div>`:'';return s+`<div class="ni${UI.view===item.id?' on':''}" onclick="go('${item.id}')"><span class="ni-ic">${item.ic}</span><span class="ni-lbl">${item.lbl}</span></div>`;}).join('');}
-function go(id){UI.view=id;document.querySelectorAll('.view').forEach(v=>v.classList.remove('on'));document.getElementById('v-'+id)?.classList.add('on');document.getElementById('tb-title').textContent=TITLES[id]||id;renderNav();const map={dashboard:renderDash,transactions:()=>{if(_txTab==='bitget'){renderBitgetActivity();}else renderTxs();},calendar:renderCalendar,recurring:renderRecurring,cashflow:renderCashflow,watchlist:renderWatchlist,accounts:renderAccounts,budgets:renderBudgets,reports:renderReports,portfolio:renderPortfolio,bitget:renderBitget,live:()=>{renderLive();if(Date.now()-(window._lastRefresh||0)>30000){window._lastRefresh=Date.now();refreshPrices(true);}},dca:renderDCA,analyse:renderAnalyse,tax:renderTax,revenus:renderRevenus,converter:renderConverter,ai:renderAI,settings:renderSettings};map[id]?.();updSbWealth();if(window.innerWidth<=640){document.getElementById('sidebar').classList.remove('open');document.body.classList.remove('sb-open');}}
+function go(id){UI.view=id;document.querySelectorAll('.view').forEach(v=>v.classList.remove('on'));document.getElementById('v-'+id)?.classList.add('on');document.getElementById('tb-title').textContent=TITLES[id]||id;renderNav();const map={dashboard:renderDash,transactions:()=>{if(_txTab==='bitget'){renderBitgetActivity();}else renderTxs();},calendar:renderCalendar,recurring:renderRecurring,cashflow:renderCashflow,watchlist:renderWatchlist,accounts:renderAccounts,budgets:renderBudgets,reports:renderReports,portfolio:renderPortfolio,bitget:renderBitget,live:()=>{renderLive();if(Date.now()-(window._lastRefresh||0)>30000){window._lastRefresh=Date.now();refreshPrices(true);}},dca:renderDCA,analyse:renderAnalyse,tax:renderTax,revenus:renderRevenus,momo:renderMomoPage,nsia:renderNsiaPage,converter:renderConverter,ai:renderAI,settings:renderSettings};map[id]?.();updSbWealth();if(window.innerWidth<=640){document.getElementById('sidebar').classList.remove('open');document.body.classList.remove('sb-open');}}
 function toggleSidebar(){var sb=document.getElementById('sidebar');if(window.innerWidth<=640){sb.classList.toggle('open');document.body.classList.toggle('sb-open');}else{sb.classList.toggle('slim');}}
 function updSbWealth(){
   const nw=getNetWorth(),pv=pfVal(),sp=INV.spotBalance;
@@ -2038,6 +2072,54 @@ function renderRevenus(){
 function setMrrGoal(){const cur0=FIN.data.settings.mrrGoal||'';const v=prompt('Objectif de MRR (revenu mensuel récurrent) en '+cur()+' — laisse vide pour retirer :',cur0);if(v===null)return;const n=parseFloat(String(v).replace(/[^0-9.,]/g,'').replace(',','.'))||0;FIN.data.settings.mrrGoal=n;finSave();renderRevenus();toast(n>0?'🎯 Objectif MRR : '+fmtM(n):'Objectif retiré','ok');}
 function exportRevenusCSV(){const months=[];const d0=new Date();for(let i=11;i>=0;i--){const dd=new Date(d0.getFullYear(),d0.getMonth()-i,1);months.push(dd.toISOString().slice(0,7));}const rows=[['Mois','Revenus','Depenses','Net']];months.forEach(m=>{const i=getMonthInc(m),e=getMonthExp(m);rows.push([m,Math.round(i),Math.round(e),Math.round(i-e)]);});rows.push([]);rows.push(['Revenus par categorie ('+revPeriodLabel(UI.revPeriod||'month')+')','Montant']);txByCat('inc').forEach(x=>rows.push([x.cat.n,Math.round(x.val)]));rows.push([]);rows.push(['Depenses par categorie','Montant']);txByCat('exp').forEach(x=>rows.push([x.cat.n,Math.round(x.val)]));const csv='﻿'+rows.map(r=>r.map(v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"').join(',')).join('\r\n');const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8;'}));a.download='revenus_depenses_'+today()+'.csv';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);toast('Export CSV ✓','ok');}
 function printRevenusPDF(){const mrr=recMonthlyByType('inc');const months=[];const d0=new Date();for(let i=11;i>=0;i--){const dd=new Date(d0.getFullYear(),d0.getMonth()-i,1);months.push(dd.toISOString().slice(0,7));}const tx=FIN.data.transactions||[];const ti=tx.filter(t=>t.type==='inc').reduce((s,t)=>s+convertAmt(t.amount,t.cur||cur(),cur()),0);const te=tx.filter(t=>t.type==='exp').reduce((s,t)=>s+convertAmt(t.amount,t.cur||cur(),cur()),0);const w=window.open('','_blank');if(!w){toast('Autorise les pop-ups pour le PDF','err');return;}const rowsM=months.map(m=>{const i=getMonthInc(m),e=getMonthExp(m);return `<tr><td>${m}</td><td style="color:#16A34A">${fmtM(i)}</td><td style="color:#DC2626">${fmtM(e)}</td><td><b>${fmtM(i-e)}</b></td></tr>`;}).join('');w.document.write(`<html><head><title>Revenus & Dépenses ${today()}</title><style>body{font-family:Arial,Helvetica,sans-serif;padding:32px;color:#18181f}h1{color:#C9A227;margin-bottom:4px}table{width:100%;border-collapse:collapse;margin-top:8px}th,td{text-align:left;padding:7px 10px;border-bottom:1px solid #eee;font-size:13px}th{color:#888;font-size:11px;text-transform:uppercase}.k{display:inline-block;margin:6px 20px 6px 0;font-size:11px;color:#666}.k b{display:block;font-size:19px;color:#16A34A;margin-top:2px}</style></head><body><h1>Revenus &amp; Dépenses</h1><div style="color:#888;font-size:12px;margin-bottom:14px">NEXUS · Patrimoine OS — ${today()}</div><div><span class="k">MRR<b>${fmtM(mrr)}</b></span><span class="k">ARR<b>${fmtM(mrr*12)}</b></span><span class="k">CA total<b>${fmtM(ti)}</b></span><span class="k">Dépenses total<b style="color:#DC2626">${fmtM(te)}</b></span><span class="k">Résultat net<b style="color:${ti-te>=0?'#16A34A':'#DC2626'}">${fmtM(ti-te)}</b></span></div><h3 style="margin-top:22px">Détail mensuel (12 mois)</h3><table><thead><tr><th>Mois</th><th>Revenus</th><th>Dépenses</th><th>Net</th></tr></thead><tbody>${rowsM}</tbody></table><p style="margin-top:24px;color:#aaa;font-size:10px">Généré automatiquement par NEXUS</p></body></html>`);w.document.close();setTimeout(()=>{try{w.print();}catch(e){}},450);toast('PDF prêt — utilise « Enregistrer en PDF »','ok');}
+// ---------- ONGLET NSIA ----------
+function renderNsiaPage(){
+  const n=nsiaData();const body=document.getElementById('nsia-body'),empty=document.getElementById('nsia-empty');
+  if(!n||!(n.total>0)){if(empty){empty.style.display='';empty.innerHTML='<div class="empty"><div class="empty-ic">🏛</div><div class="empty-tit">Aucune donnée NSIA</div><div style="color:var(--t2);font-size:12px;margin:6px 0 12px">Dépose ton relevé NSIA dans le salon Discord (il se synchronise ici), ou saisis tes parts.</div><button class="btn btn-gold" onclick="editNSIA()">✏ Saisir mes parts</button></div>';}if(body)body.style.display='none';return;}
+  if(empty)empty.style.display='none';if(body)body.style.display='';
+  const fx=v=>fmtM(convertAmt(v||0,'XOF',cur()));
+  const ev=n.invested>0?(n.pvLat/n.invested*100):0;
+  setT('nsia-sub',`Valorisation ${fx(n.total)} · ${(n.ops||[]).length} opération(s) · synchro auto via Discord`);
+  document.getElementById('nsia-kpis').innerHTML=[
+    {l:'Valorisation',v:fx(n.total),c:'#E8BC3A'},
+    {l:'Investi (net)',v:fx(n.invested),c:''},
+    {l:'Plus-value latente',v:(n.pvLat>=0?'+':'')+fx(n.pvLat),c:n.pvLat>=0?'var(--ok)':'var(--err)'},
+    {l:'+/- value réalisée',v:(n.pvReal>=0?'+':'')+fx(n.pvReal),c:n.pvReal>=0?'var(--ok)':'var(--err)'},
+    {l:'Évolution',v:(ev>=0?'▲ +':'▼ ')+Math.abs(ev).toFixed(1)+'%',c:ev>=0?'var(--ok)':'var(--err)'},
+    {l:'Parts détenues',v:(n.units||'—'),c:''},
+    {l:'Prix de revient',v:n.prixRevient?fx(n.prixRevient):'—',c:''}
+  ].map(k=>`<div class="kc"><div class="kc-lbl">${k.l}</div><div class="kc-val" style="${k.c?'color:'+k.c:''}">${k.v}</div></div>`).join('');
+  const ops=(n.ops||[]).slice().sort((a,b)=>(a.date||'').localeCompare(b.date||''));
+  const monthsSet=[];if(ops.length){let d=new Date(ops[0].date+'T00:00:00');d.setDate(1);const end=new Date();end.setDate(1);let g=0;while(d<=end&&g<72){monthsSet.push(d.toISOString().slice(0,7));d.setMonth(d.getMonth()+1);g++;}}
+  let cum=0;const cumData=monthsSet.map(m=>{ops.forEach(o=>{if(monthKey(o.date)===m)cum+=(o.sens==='inc'?o.montant:-o.montant);});return Math.round(convertAmt(cum,'XOF',cur()));});
+  const contrib=monthsSet.map(m=>{let s=0;ops.forEach(o=>{if(monthKey(o.date)===m)s+=(o.sens==='inc'?o.montant:-o.montant);});return Math.round(convertAmt(s,'XOF',cur()));});
+  const valoData=monthsSet.map((m,i)=>i===monthsSet.length-1?Math.round(convertAmt(n.total,'XOF',cur())):null);
+  mkChart('c-nsia-evo',{data:{labels:monthsSet.map(m=>m.slice(2)),datasets:[{type:'bar',label:'Apports',data:contrib,backgroundColor:'#E8BC3A',borderRadius:4,borderWidth:0},{type:'line',label:'Cumul investi',data:cumData,borderColor:'#9A9AB5',borderWidth:2,tension:.3,pointRadius:0,fill:false},{type:'line',label:'Valorisation',data:valoData,borderColor:'#16A34A',backgroundColor:'#16A34A',borderWidth:0,pointRadius:6,pointHoverRadius:7,spanGaps:false}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:true,labels:{color:'#9A9AB5',font:{size:10},boxWidth:10}},tooltip:{callbacks:{label:c=>c.dataset.label+': '+fmtM(+c.raw)}}},scales:sc(v=>fmtM(v))}});
+  mkChart('c-nsia-pv',{type:'doughnut',data:{labels:['Investi','Plus-value'],datasets:[{data:[Math.round(convertAmt(n.invested,'XOF',cur())),Math.round(convertAmt(Math.max(0,n.pvLat),'XOF',cur()))],backgroundColor:['#E8BC3A','#16A34A'],borderWidth:0,hoverOffset:6}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>c.label+': '+fmtM(+c.raw)}}},cutout:'66%'}});
+  const leg=document.getElementById('nsia-pv-leg');if(leg)leg.innerHTML=[['Investi',n.invested,'#E8BC3A'],['Plus-value latente',n.pvLat,'#16A34A']].map(x=>`<div style="display:flex;justify-content:space-between;padding:2.5px 0;font-size:11px"><span style="color:${x[2]};font-weight:600">● ${x[0]}</span><span style="font-family:var(--fm);color:var(--t1)">${fx(x[1])}</span></div>`).join('');
+  const oe=document.getElementById('nsia-ops');if(oe)oe.innerHTML=(ops.length?ops.slice().reverse():[]).map(o=>{const inc=o.sens==='inc';return `<div class="txi"><div class="tx-ic" style="background:${inc?'rgba(22,163,74,.12)':'rgba(239,68,68,.12)'}">${inc?'⬇':'⬆'}</div><div class="tx-info"><div class="tx-n">${inc?'Souscription':'Rachat'}${o.pv?` · PV ${fx(o.pv)}`:''}</div><div class="tx-m">${fmtDate(o.date,false)}</div></div><div class="tx-a ${inc?'inc':'exp'}">${inc?'+':'-'}${fx(o.montant)}</div></div>`;}).join('')||'<div style="color:var(--t2);font-size:12px;text-align:center;padding:14px">Aucune opération</div>';
+}
+// ---------- ONGLET MOMO / MOOV ----------
+function momoMonthFlow(mk,type){return (FIN.data.transactions||[]).filter(t=>{const a=getAcc(t.accId);return !!a&&(a.id==='momo'||a.id==='moov'||a.type==='Mobile Money')&&t.type===type&&monthKey(t.date)===mk;}).reduce((s,t)=>s+convertAmt(t.amount,t.cur||cur(),cur()),0);}
+function renderMomoPage(){
+  const m=momoStats();const body=document.getElementById('momo-body'),empty=document.getElementById('momo-empty');
+  if(!m.n){if(empty){empty.style.display='';empty.innerHTML='<div class="empty"><div class="empty-ic">📱</div><div class="empty-tit">Aucune opération MoMo/Moov</div><div style="color:var(--t2);font-size:12px;margin:6px 0 12px">Importe tes SMS MoMo (Discord / cloud / bridge) pour suivre tes flux ici.</div><button class="btn btn-gold" onclick="openMomoModal&&openMomoModal()">📥 Importer</button></div>';}if(body)body.style.display='none';return;}
+  if(empty)empty.style.display='none';if(body)body.style.display='';
+  setT('momo-sub',`${m.n} opération(s) · ${m.mtn} MTN · ${m.moov} Moov · net ${(m.net>=0?'+':'')+fmtM(m.net)}`);
+  document.getElementById('momo-kpis').innerHTML=[
+    {l:'Solde net (flux)',v:(m.net>=0?'+':'')+fmtM(m.net),c:m.net>=0?'var(--ok)':'var(--err)'},
+    {l:'Entrées',v:'+'+fmtM(m.inc),c:'var(--ok)'},
+    {l:'Sorties',v:'-'+fmtM(m.exp),c:'var(--err)'},
+    {l:'Frais payés',v:fmtM(m.fees),c:'var(--err)'},
+    {l:'Opérations',v:String(m.n),c:''}
+  ].map(k=>`<div class="kc"><div class="kc-lbl">${k.l}</div><div class="kc-val" style="${k.c?'color:'+k.c:''}">${k.v}</div></div>`).join('');
+  const months=[];const d0=new Date();for(let i=11;i>=0;i--){const dd=new Date(d0.getFullYear(),d0.getMonth()-i,1);months.push(dd.toISOString().slice(0,7));}
+  mkChart('c-momo-flow',{type:'bar',data:{labels:months.map(x=>x.slice(2)),datasets:[{label:'Entrées',data:months.map(x=>Math.round(momoMonthFlow(x,'inc'))),backgroundColor:'#16A34A',borderRadius:4,borderWidth:0},{label:'Sorties',data:months.map(x=>Math.round(momoMonthFlow(x,'exp'))),backgroundColor:'#EF4444',borderRadius:4,borderWidth:0}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:true,labels:{color:'#9A9AB5',font:{size:10},boxWidth:10}},tooltip:{callbacks:{label:c=>c.dataset.label+': '+fmtM(+c.raw)}}},scales:sc(v=>fmtM(v))}});
+  mkChart('c-momo-net',{type:'doughnut',data:{labels:['MTN MoMo','Moov'],datasets:[{data:[m.mtn,m.moov],backgroundColor:['#FFCC00','#F37021'],borderWidth:0,hoverOffset:6}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>c.label+': '+c.raw+' ops'}}},cutout:'66%'}});
+  const leg=document.getElementById('momo-net-leg');if(leg)leg.innerHTML=[['MTN MoMo',m.mtn,'#FFCC00'],['Moov',m.moov,'#F37021']].map(x=>`<div style="display:flex;justify-content:space-between;padding:2.5px 0;font-size:11px"><span style="color:${x[2]};font-weight:600">● ${x[0]}</span><span style="font-family:var(--fm);color:var(--t1)">${x[1]} ops</span></div>`).join('');
+  const ops=(FIN.data.transactions||[]).filter(t=>{const a=getAcc(t.accId);return !!a&&(a.id==='momo'||a.id==='moov'||a.type==='Mobile Money');}).slice().sort((a,b)=>(b.date||'').localeCompare(a.date||'')).slice(0,60);
+  const oe=document.getElementById('momo-ops');if(oe)oe.innerHTML=ops.map(t=>{const inc=t.type==='inc';const cat=getCat(t.catId);return `<div class="txi"><div class="tx-ic" style="background:${cat.col}18">${cat.ic||(inc?'⬇':'⬆')}</div><div class="tx-info"><div class="tx-n">${esc(t.payee||cat.n)}</div><div class="tx-m">${fmtDate(t.date,true)} · ${esc(getAcc(t.accId).n)}</div></div><div class="tx-a ${inc?'inc':'exp'}">${inc?'+':'-'}${fmtAmt(t.amount,t.cur||cur())}</div></div>`;}).join('')||'<div style="color:var(--t2);font-size:12px;text-align:center;padding:14px">Aucune opération</div>';
+}
 
 /* --- PRÉVISION CASHFLOW --- */
 function renderCashflow(){
