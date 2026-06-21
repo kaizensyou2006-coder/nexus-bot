@@ -1212,6 +1212,32 @@ if discord is not None:
         e.timestamp = discord.utils.utcnow()
         return e
 
+    async def build_analyse_embed():
+        await refresh_bitget_state(HTTP_SESSION)
+        bg = STATE.get("bitget") or {}
+        bg_usd = float(bg.get("total", 0) or 0); bg_earn = float(bg.get("earn", 0) or 0)
+        rate = get_usd_xof(); bg_xof = bg_usd * rate
+        nsia = float((STATE.get("nsia") or {}).get("total", 0) or 0)
+        momo = max(0.0, sum(momo_balance_by_net().values()))
+        total = bg_xof + nsia + momo
+        passif_an = bg_earn * rate * 0.04 + nsia * 0.10
+        passif_mois = passif_an / 12.0
+        seuil = 12000000.0
+        chemin = (total / seuil * 100) if seuil else 0
+        crypto_part = (bg_xof / total * 100) if total else 0
+        e = discord.Embed(title="📈 Analyse — Auto-financement", color=GOLD,
+                          description="Ou en es-tu, et quand ton patrimoine se financera-t-il seul ?")
+        e.add_field(name="🏦 Patrimoine total",
+                    value="**%s**\nCrypto %s (%.0f%%) · NSIA %s · Cash %s"
+                          % (fmt_xof(total), fmt_xof(bg_xof), crypto_part, fmt_xof(nsia), fmt_xof(momo)), inline=False)
+        e.add_field(name="🔋 Revenu passif estime", value="**%s / mois**\nEarn 4%%/an + OPCVM 10%%/an" % fmt_xof(passif_mois), inline=True)
+        e.add_field(name="🎯 Seuil (100k/mois)", value="**12 000 000 FCFA**\n%s\n%s du chemin"
+                    % (_bar(chemin), ("%.1f%%" % chemin)), inline=True)
+        e.add_field(name="💡 Priorites",
+                    value="1. Epargner plus (levier n.1)\n2. Reduire la concentration crypto\n3. Reinvestir 100%% des gains", inline=False)
+        e.set_footer(text="Analyse pedagogique, pas un conseil personnalise. PDF complet disponible dans l'app.")
+        return e
+
     def build_status_embed():
         up = int(time.time()) - START_TS
         h, rem = divmod(up, 3600)
@@ -1805,6 +1831,11 @@ async def run_discord(http_session):
     async def _cmd_report(interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
         await interaction.followup.send(embed=await build_report_embed(), ephemeral=True)
+
+    @tree.command(name="analyse", description="Analyse auto-financement : ou en es-tu et quand ton patrimoine se finance seul")
+    async def _cmd_analyse(interaction):
+        await interaction.response.defer(thinking=True)
+        await interaction.followup.send(embed=await build_analyse_embed())
 
     @tree.command(name="solde", description="Patrimoine total consolidé (MoMo + NSIA + Bitget)")
     async def _cmd_solde(interaction):
