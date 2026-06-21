@@ -1369,6 +1369,7 @@ function fm(v,d=2){
   return'$'+val.toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d});
 }
 function fmFCFA(v){return Number(v||0).toLocaleString('fr-FR',{minimumFractionDigits:0,maximumFractionDigits:0})+' FCFA';}
+function fmH(v){/* v exprimé dans la devise globale cur() — affiché selon le toggle INV.currency (USD/FCFA) du Holding */const x=Number(v||0);if(INV.currency==='USD'){const usd=convertAmt(x,cur(),'USD');return '$'+usd.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});}return fmFCFA(convertAmt(x,cur(),'XOF'));}
 function convertAmt(a,from,to){if(from===to)return a;const toUSD=(x,c)=>{if(c==='USD')return x;if(c==='XOF')return x/XOF;const r=UI.fxRates[c];return r?x/r:x;};const frUSD=(x,c)=>{if(c==='USD')return x;if(c==='XOF')return x*XOF;const r=UI.fxRates[c];return r?x*r:x;};return frUSD(toUSD(a,from),to);}
 function getAccBal(id){const acc=getAcc(id);const ac=acc.cur||cur();let b=acc.bal||0;FIN.data.transactions.forEach(t=>{const am=convertAmt(t.amount,t.cur||cur(),ac);if(t.type==='inc'&&t.accId===id)b+=am;if(t.type==='exp'&&t.accId===id)b-=am;if(t.type==='trf'){if(t.accId===id)b-=am;if(t.toAccId===id)b+=am;}});return b;}
 function isBitgetAcc(a){return(a.n||'').toLowerCase()==='bitget'||a.type==='Bitget Spot';}
@@ -1876,6 +1877,7 @@ function toggleCur(){
   else if(v==='live')renderLive();
   else if(v==='analyse')renderAnalyse();
   else if(v==='tax')renderTax();
+  else if(v==='holding'&&typeof renderHolding==='function')renderHolding();
   updSbWealth();
   renderTicker();
 }
@@ -2420,7 +2422,7 @@ function HOLDING_HTML(){return `
 /* ---------- Rendu ---------- */
 function setT(id,v){const e=document.getElementById(id);if(e)e.textContent=v;}
 function hxColor(p){return p>=70?'var(--hx-grn)':p>=40?'var(--hx-gold)':'var(--hx-red)';}
-function hxCountUp(el,to){if(!el)return;el.textContent=fmtM(Math.round(to));if(document.hidden)return;const dur=750,t0=performance.now();function step(t){const k=Math.min(1,(t-t0)/dur);const v=to*(1-Math.pow(1-k,3));el.textContent=fmtM(Math.round(v));if(k<1)requestAnimationFrame(step);else el.textContent=fmtM(Math.round(to));}requestAnimationFrame(step);setTimeout(function(){el.textContent=fmtM(Math.round(to));},dur+120);}
+function hxCountUp(el,to){if(!el)return;el.textContent=fmH(Math.round(to));if(document.hidden)return;const dur=750,t0=performance.now();function step(t){const k=Math.min(1,(t-t0)/dur);const v=to*(1-Math.pow(1-k,3));el.textContent=fmH(Math.round(v));if(k<1)requestAnimationFrame(step);else el.textContent=fmH(Math.round(to));}requestAnimationFrame(step);setTimeout(function(){el.textContent=fmH(Math.round(to));},dur+120);}
 function hxSpark(id,vals){const el=document.getElementById(id);if(!el)return;if(!vals||vals.length<2){el.innerHTML='';return;}const w=320,h=34,mn=Math.min(...vals),mx=Math.max(...vals),rng=(mx-mn)||1;const pts=vals.map((v,i)=>[i/(vals.length-1)*w,h-((v-mn)/rng)*(h-4)-2]);const d=pts.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' ');const area=d+` L${w} ${h} L0 ${h} Z`;const up=vals[vals.length-1]>=vals[0];const c=up?'#22E89B':'#FF5C7A';el.innerHTML=`<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" preserveAspectRatio="none"><defs><linearGradient id="hxsg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${c}" stop-opacity=".35"/><stop offset="1" stop-color="${c}" stop-opacity="0"/></linearGradient></defs><path d="${area}" fill="url(#hxsg)"/><path d="${d}" fill="none" stroke="${c}" stroke-width="2" stroke-linecap="round"/></svg>`;}
 
 function renderHolding(){
@@ -2430,16 +2432,16 @@ function renderHolding(){
   const A=holdingAnalytics();
   const tEl=document.getElementById('hold-total');if(tEl)hxCountUp(tEl,tot);
   try{var _rb=document.getElementById('hold-refresh');if(_rb&&!document.getElementById('hold-auto-ind')){var _sp=document.createElement('div');_sp.id='hold-auto-ind';_sp.style.cssText='font-size:10px;color:var(--hx-grn);font-family:var(--fm);text-align:right';_rb.parentNode.appendChild(_sp);}var _ai=document.getElementById('hold-auto-ind');if(_ai)_ai.textContent='🟢 Auto · 5 min'+(BITGET.lastSync?(' · '+new Date(BITGET.lastSync).toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})):'');}catch(e){}
-  setT('hold-sub',`Cash ${fmtM(cash)}  ·  Crypto ${fmtM(crypto)}${UI.includeCrypto?'':' (exclu)'}  ·  NSIA ${fmtM(nsia)}`);
+  setT('hold-sub',`Cash ${fmH(cash)}  ·  Crypto ${fmH(crypto)}${UI.includeCrypto?'':' (exclu)'}  ·  NSIA ${fmH(nsia)}`);
   const tgl=document.getElementById('hold-cryptotgl');if(tgl){tgl.innerHTML=(UI.includeCrypto?'✅ Crypto incluse':'⬜ Crypto exclue');tgl.style.color=UI.includeCrypto?'var(--hx-grn)':'var(--t2)';tgl.style.borderColor=UI.includeCrypto?'rgba(34,232,155,.4)':'rgba(255,255,255,.12)';}
   const hist=snapHolding();let chPct=0;if(hist.length>1){const past=hist[Math.max(0,hist.length-31)].total;if(past>0)chPct=((tot-past)/past)*100;}
   const vEl=document.getElementById('hold-var');if(vEl){vEl.innerHTML=(chPct>=0?'▲ +':'▼ ')+Math.abs(chPct).toFixed(2)+'% / 30j';vEl.style.color=chPct>=0?'var(--hx-grn)':'var(--hx-red)';}
   hxSpark('hold-spark',hist.slice(-30).map(h=>h.total));
   // Chips
   const chips=[
-    {ic:'💵',l:'Cash & banques',v:fmtM(cash),s:FIN.data.accounts.filter(a=>!isBitgetAcc(a)&&!isNsiaAcc(a)).length+' compte(s)',c:'var(--hx-grn)'},
-    {ic:'🔗',l:'Crypto Bitget',v:fmtM(crypto),s:'Spot '+fm(A.spotUSD)+' · Earn '+fm(A.earnUSD),c:'var(--hx-cyan)'},
-    {ic:'🏛',l:'NSIA Invest',v:fmtM(nsia),s:(nsiaAccount()?((nsiaAccount().nsiaUnits||0)+' parts'):'à configurer'),c:'var(--hx-gold)'},
+    {ic:'💵',l:'Cash & banques',v:fmH(cash),s:FIN.data.accounts.filter(a=>!isBitgetAcc(a)&&!isNsiaAcc(a)).length+' compte(s)',c:'var(--hx-grn)'},
+    {ic:'🔗',l:'Crypto Bitget',v:fmH(crypto),s:'Spot '+fm(A.spotUSD)+' · Earn '+fm(A.earnUSD),c:'var(--hx-cyan)'},
+    {ic:'🏛',l:'NSIA Invest',v:fmH(nsia),s:(nsiaAccount()?((nsiaAccount().nsiaUnits||0)+' parts'):'à configurer'),c:'var(--hx-gold)'},
     {ic:'⚡',l:'Variation 24h',v:(A.chg>=0?'+':'')+A.chg.toFixed(2)+'%',s:'pondérée crypto',c:A.chg>=0?'var(--hx-grn)':'var(--hx-red)'},
     {ic:'🛡️',l:'Stablecoins',v:(A.totUSD>0?(A.stable/A.totUSD*100):0).toFixed(0)+'%',s:fm(A.stable)+' protégés',c:'var(--hx-vio)'},
     {ic:'🎯',l:'Concentration',v:(A.conc*100).toFixed(0)+'%',s:A.top?('max: '+A.top.sym):'—',c:A.conc>0.5?'var(--hx-red)':'var(--hx-grn)'}
@@ -2545,12 +2547,12 @@ function injectReportConsolidated(){
     <div class="hx-title" style="margin:0"><span class="dot"></span>🧾 Rapport patrimoine complet — tous les comptes</div>
     <div style="display:flex;gap:7px"><button class="btn btn-ghost btn-sm" onclick="exportHoldingReport()">🖨️ Exporter / PDF</button><button class="btn btn-gold btn-sm" onclick="go('holding')">🏛 Vue Holding</button></div></div>
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:11px;margin-bottom:14px">
-    ${[{l:'Patrimoine total',v:fmtM(tot),c:'var(--hx-cyan)'},{l:'Cash & banques',v:fmtM(cash),c:'var(--hx-grn)'},{l:'Crypto Bitget',v:fmtM(crypto),c:'var(--hx-cyan)'},{l:'NSIA Invest',v:fmtM(nsia),c:'var(--hx-gold)'},{l:'Variation 24h',v:(A.chg>=0?'+':'')+A.chg.toFixed(2)+'%',c:A.chg>=0?'var(--hx-grn)':'var(--hx-red)'}].map(k=>`<div class="hx-stat" style="--ac:${k.c}"><div class="l">${k.l}</div><div class="v" style="color:${k.c}">${k.v}</div></div>`).join('')}
+    ${[{l:'Patrimoine total',v:fmH(tot),c:'var(--hx-cyan)'},{l:'Cash & banques',v:fmH(cash),c:'var(--hx-grn)'},{l:'Crypto Bitget',v:fmH(crypto),c:'var(--hx-cyan)'},{l:'NSIA Invest',v:fmH(nsia),c:'var(--hx-gold)'},{l:'Variation 24h',v:(A.chg>=0?'+':'')+A.chg.toFixed(2)+'%',c:A.chg>=0?'var(--hx-grn)':'var(--hx-red)'}].map(k=>`<div class="hx-stat" style="--ac:${k.c}"><div class="l">${k.l}</div><div class="v" style="color:${k.c}">${k.v}</div></div>`).join('')}
   </div>
   <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12.5px">
     <thead><tr style="color:var(--t2);text-align:left"><th style="padding:7px 6px">Compte</th><th>Type</th><th class="tr">Solde natif</th><th class="tr">En ${cur()}</th><th class="tr">Poids</th></tr></thead>
     <tbody>${rows||'<tr><td colspan="5" style="text-align:center;color:var(--t2);padding:14px">Aucun compte</td></tr>'}</tbody>
-    <tfoot><tr style="border-top:1px solid var(--border);font-weight:800"><td colspan="3" style="padding:9px 6px">TOTAL CONSOLIDÉ</td><td class="tr" style="font-family:var(--fm);color:var(--hx-cyan)">${fmtM(tot)}</td><td class="tr">100%</td></tr></tfoot>
+    <tfoot><tr style="border-top:1px solid var(--border);font-weight:800"><td colspan="3" style="padding:9px 6px">TOTAL CONSOLIDÉ</td><td class="tr" style="font-family:var(--fm);color:var(--hx-cyan)">${fmH(tot)}</td><td class="tr">100%</td></tr></tfoot>
   </table></div>
   ${cryptoRows?`<div style="margin-top:12px"><div style="font-size:10.5px;color:var(--t2);text-transform:uppercase;letter-spacing:.6px;margin-bottom:7px">Détail crypto</div><div style="display:flex;flex-wrap:wrap;gap:6px">${cryptoRows}</div></div>`:''}
   <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:12px">${Object.entries(byCur).map(([c,v])=>`<span class="hx-pill" style="background:rgba(255,255,255,.05);color:var(--t1)">Devise ${c}: ${fmtAmt(v,c)}</span>`).join('')}</div>`;
