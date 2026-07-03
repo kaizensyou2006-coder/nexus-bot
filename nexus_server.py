@@ -25,6 +25,17 @@ from urllib.parse import parse_qs
 import aiohttp
 from aiohttp import web
 
+# ----------------------- Logging -----------------------
+# Logs structures (horodatage + niveau) visibles dans les logs Render.
+# Niveau ajustable via la variable d'env LOG_LEVEL (INFO par defaut).
+import logging
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger("nexus")
+
 try:
     import discord
 except Exception:
@@ -39,14 +50,14 @@ try:
     for _enc in ("utf-8-sig", "utf-16", "utf-8", "latin-1"):
         try:
             _CFG = json.loads(_b.decode(_enc).strip())
-            print("[config] nexus_config.json charge OK (%d cles, %s)" % (len(_CFG), _enc))
+            log.info("nexus_config.json charge OK (%d cles, %s)", len(_CFG), _enc)
             break
         except Exception:
             _CFG = {}
     if not _CFG:
-        sys.stderr.write("[config] ERREUR: impossible de lire/parser nexus_config.json\n")
+        log.warning("nexus_config.json introuvable/illisible — lecture depuis les variables d'environnement.")
 except Exception as _e:
-    sys.stderr.write("[config] ERREUR lecture nexus_config.json: %s\n" % _e)
+    log.warning("Pas de nexus_config.json (%s) — lecture depuis les variables d'environnement.", _e)
     _CFG = {}
 
 def _conf(key, default=""):
@@ -660,13 +671,20 @@ async def ocr_image(session, data, filename, is_pdf=False):
 
 # ----------------------- Serveur HTTP -----------------------
 def cors(resp):
-    resp.headers["Access-Control-Allow-Origin"] = "*"
+    # Restreint aux origines connues : l'app est servie par CE serveur (PUBLIC_URL).
+    resp.headers["Access-Control-Allow-Origin"] = PUBLIC_URL or "*"
     resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     resp.headers["Access-Control-Allow-Headers"] = "*"
     return resp
 
 def check_token(request):
-    tok = request.query.get("token", "") or request.headers.get("x-auth", "")
+    # Accepte le jeton via (par ordre de preference, du plus sur au moins sur) :
+    #   1) header  Authorization: Bearer <token>   (recommande — hors URL/logs)
+    #   2) header  x-auth: <token>
+    #   3) query   ?token=<token>                   (compat app existante)
+    auth = request.headers.get("Authorization", "")
+    bearer = auth[7:].strip() if auth[:7].lower() == "bearer " else ""
+    tok = bearer or request.headers.get("x-auth", "") or request.query.get("token", "")
     return (not AUTH_TOKEN) or tok == AUTH_TOKEN
 
 async def h_options(request):
@@ -907,6 +925,38 @@ def consolidated_total():
     total = momo_tot + nsia + bg_xof
     return {"total": total, "momo": momo_tot, "bynet": bynet,
             "nsia": nsia, "bitget_usd": bg_usd, "bitget_xof": bg_xof}
+
+# ----------------------- Historique du patrimoine -----------------------
+HISTORY_MAX = 400                                   # ~13 mois de points quotidiens
+ALERT_PCT   = float(_conf("ALERT_PCT") or "5")      # seuil d'alerte variation 24h (%)
+
+def record_snapshot():
+    """Enregistre (ou met a jour) le point du JOUR dans STATE["history"].
+    1 point par jour : {d, total, momo, nsia, bg (en FCFA)}. Retourne (point, veille)."""
+    c = consolidated_total()
+    today = (datetime.datetime.utcnow() + datetime.timedelta(hours=1)).date().isoformat()
+    hist = STATE.setdefault("history", [])
+    point = {"d": today, "total": int(round(c["total"])), "momo": int(round(c["momo"])),
+             "nsia": int(round(c["nsia"])), "bg": int(round(c["bitget_xof"]))}
+    if hist and hist[-1].get("d") == today:
+        prev = hist[-2] if len(hist) >= 2 else None
+        hist[-1] = point
+    else:
+        prev = hist[-1] if hist else None
+        hist.append(point)
+    del hist[:-HISTORY_MAX]
+    save_state()
+    return point, prev
+
+def sparkline(vals):
+    """Mini graphe texte (▁▂▃▄▅▆▇█) a partir d'une liste de valeurs."""
+    if not vals:
+        return ""
+    blocks = "▁▂▃▄▅▆▇█"
+    lo, hi = min(vals), max(vals)
+    if hi - lo < 1e-9:
+        return blocks[3] * len(vals)
+    return "".join(blocks[int((v - lo) / (hi - lo) * 7)] for v in vals)
 
 async def refresh_bitget_state(session):
     """Recalcule Bitget en direct (live + staking calé) et met STATE["bitget"] a jour.
@@ -1346,6 +1396,50 @@ if discord is not None:
             except Exception as e:
                 sys.stderr.write("[recap] %s\n" % e)
             await asyncio.sleep(3600)  # vérifie toutes les heures
+
+    async def history_scheduler(client):
+        """Toutes les heures : rafraîchit Bitget, enregistre le point du jour dans
+        l'historique, et ALERTE dans le salon rapports si le patrimoine varie de
+        plus de ALERT_PCT % par rapport à la veille."""
+        await client.wait_until_ready()
+        while not client.is_closed():
+            try:
+                await refresh_bitget_state(HTTP_SESSION)
+                point, prev = record_snapshot()
+                if prev and prev.get("total"):
+                    var = (point["total"] - prev["total"]) / prev["total"] * 100.0
+                    flags = STATE.setdefault("alert_flags", {})
+                    key = "alert_" + point["d"]
+                    if abs(var) >= ALERT_PCT and not flags.get(key):
+                        for k in list(flags):           # purge les vieux drapeaux
+                            if k != key:
+                                flags.pop(k, None)
+                        flags[key] = True
+                        save_state()
+                        e = discord.Embed(
+                            title="🚨 Alerte patrimoine : %+.1f%% en 24h" % var,
+                            description="**%s** → **%s**\n(seuil : ±%.0f%% — réglable via ALERT_PCT)"
+                                        % (fmt_xof(prev["total"]), fmt_xof(point["total"]), ALERT_PCT),
+                            colour=0x2ECC71 if var >= 0 else 0xE74C3C)
+                        await post_report(client, embed=e)
+                        log.info("alerte patrimoine envoyée (%+.1f%%)", var)
+            except Exception as e:
+                log.error("history_scheduler: %s", e)
+            await asyncio.sleep(3600)
+
+    async def keepalive_task():
+        """Auto-ping du service toutes les 10 min pour limiter le spin-down Render
+        (plan gratuit). Complément du ping externe cron-job.org (voir DEPLOY.md)."""
+        if not PUBLIC_URL:
+            return
+        while True:
+            try:
+                async with HTTP_SESSION.get(PUBLIC_URL + "/ping",
+                                            timeout=aiohttp.ClientTimeout(total=15)) as r:
+                    await r.read()
+            except Exception as e:
+                log.warning("keepalive: %s", e)
+            await asyncio.sleep(600)
 
     async def post_report(client, embed=None, content=None, view=None, file=None):
         """Envoie un message dans le salon des RETOURS (REPORT_CHANNEL), sinon le panneau."""
@@ -1901,6 +1995,57 @@ async def run_discord(http_session):
         d = max(1, min(int(jours), 365))
         await interaction.followup.send(embed=await build_recap_embed(d), ephemeral=True)
 
+    @tree.command(name="historique", description="Évolution du patrimoine : graphe, variation par poste, projection 12M")
+    @discord.app_commands.describe(jours="Fenêtre en jours (2 à 365, défaut 30)")
+    async def _cmd_histo(interaction, jours: int = 30):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        d = max(2, min(int(jours), 365))
+        await refresh_bitget_state(HTTP_SESSION)
+        record_snapshot()
+        hist = STATE.get("history") or []
+        cutoff = ((datetime.datetime.utcnow() + datetime.timedelta(hours=1)).date()
+                  - datetime.timedelta(days=d)).isoformat()
+        pts = [p for p in hist if p.get("d", "") >= cutoff]
+        if len(pts) < 2:
+            await interaction.followup.send(
+                "Pas encore assez d'historique (%d point aujourd'hui). Le bot enregistre "
+                "1 point par jour automatiquement — reviens demain 😉" % len(pts), ephemeral=True)
+            return
+        first, last = pts[0], pts[-1]
+        delta = int(last["total"] - first["total"])
+        var = (delta / first["total"] * 100.0) if first["total"] else 0.0
+        span = max(1, (datetime.date.fromisoformat(last["d"])
+                       - datetime.date.fromisoformat(first["d"])).days)
+        rythme_mois = delta / span * 30.0
+        e = discord.Embed(title="📈 Évolution du patrimoine — %d derniers jours" % d,
+                          colour=0x2ECC71 if delta >= 0 else 0xE74C3C)
+        e.add_field(name="Du %s au %s" % (first["d"], last["d"]),
+                    value="**%s** → **%s**\nVariation : **%s** (%+.1f%%)"
+                          % (fmt_xof(first["total"]), fmt_xof(last["total"]),
+                             ("+" if delta >= 0 else "−") + fmt_xof(abs(delta)), var),
+                    inline=False)
+        e.add_field(name="Graphe (total)",
+                    value="`%s`" % sparkline([p["total"] for p in pts]), inline=False)
+        det = []
+        for key, lab in (("momo", "📱 MoMo"), ("nsia", "🏛 NSIA"), ("bg", "📈 Bitget")):
+            dd = int(last.get(key, 0) - first.get(key, 0))
+            det.append("%s : %s" % (lab, ("+" if dd >= 0 else "−") + fmt_xof(abs(dd))))
+        e.add_field(name="Par poste", value="\n".join(det), inline=False)
+        SEUIL = 12_000_000  # patrimoine cible (100k/mois passif — cf. /analyse)
+        if last["total"] >= SEUIL:
+            e.add_field(name="🎯 Objectif 12M", value="Seuil déjà atteint 🎉", inline=False)
+        elif rythme_mois > 0:
+            eta = datetime.date.fromisoformat(last["d"]) + datetime.timedelta(
+                days=int((SEUIL - last["total"]) / rythme_mois * 30))
+            e.add_field(name="🎯 Projection auto-financement (12M)",
+                        value="Rythme actuel : **+%s / mois** → seuil atteint vers **%s**"
+                              % (fmt_xof(rythme_mois), eta.strftime("%m/%Y")), inline=False)
+        else:
+            e.add_field(name="🎯 Projection",
+                        value="Rythme actuel : **−%s / mois** (négatif sur la fenêtre)"
+                              % fmt_xof(abs(rythme_mois)), inline=False)
+        await interaction.followup.send(embed=e, ephemeral=True)
+
     @tree.command(name="pdf", description="Rapport patrimoine en PDF sur N jours (défaut 30)")
     @discord.app_commands.describe(jours="Nombre de jours (1 à 365, défaut 30)")
     async def _cmd_pdf(interaction, jours: int = 30):
@@ -1926,6 +2071,7 @@ async def run_discord(http_session):
         e.add_field(name="📊 Rapports", value=(
             "`/rapport` — rapport complet\n"
             "`/recap [jours]` — rapport sur N jours · ex `/recap 30`\n"
+            "`/historique [jours]` — évolution + graphe + projection 12M\n"
             "`/pdf [jours]` — rapport PDF · ex `/pdf 7`"), inline=False)
         e.add_field(name="⚙️ Contrôle", value=(
             "`/panel` — panneau de contrôle (tout d'un clic)\n"
@@ -1972,7 +2118,9 @@ async def run_discord(http_session):
         if not getattr(client, "_recap_started", False):
             client._recap_started = True
             asyncio.create_task(recap_scheduler(client))
-            print("[recap] planificateur de récaps auto démarré (jour/semaine/mois)")
+            asyncio.create_task(history_scheduler(client))
+            asyncio.create_task(keepalive_task())
+            log.info("tâches de fond démarrées : récaps auto + historique/alertes + keep-alive")
 
     @client.event
     async def on_message(message):
@@ -2036,6 +2184,11 @@ async def main():
     print(" - App auto-config  : http://TON_IP:%d/?token=%s" % (PORT, AUTH_TOKEN))
     print(" - MacroDroid (SMS) : http://TON_IP:%d/momo?token=%s&text={sms}" % (PORT, AUTH_TOKEN))
     print("=" * 58)
+    if AUTH_TOKEN == "nexus229":
+        log.warning("SECURITE: AUTH_TOKEN utilise la valeur par defaut faible 'nexus229'. "
+                    "Definis un jeton long et aleatoire via la variable d'env AUTH_TOKEN.")
+    if not (BITGET_KEY and BITGET_SECRET and BITGET_PASS):
+        log.info("Bitget non configure — le proxy /bitget renverra une erreur tant que les cles ne sont pas definies.")
     app = await start_http()
     await run_discord(app["session"])
     # garde le process vivant meme si Discord est desactive
