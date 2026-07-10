@@ -1566,12 +1566,73 @@ if discord is not None:
             e.set_footer(text="%d résultat(s)" % len(res))
             await interaction.response.send_message(embed=e, ephemeral=True)
 
+    def build_history_embed(d):
+        """Embed d'évolution du patrimoine sur d jours (graphe + postes + projection).
+        Retourne None s'il n'y a pas encore assez de points quotidiens."""
+        hist = STATE.get("history") or []
+        cutoff = ((datetime.datetime.utcnow() + datetime.timedelta(hours=1)).date()
+                  - datetime.timedelta(days=d)).isoformat()
+        pts = [p for p in hist if p.get("d", "") >= cutoff]
+        if len(pts) < 2:
+            return None
+        first, last = pts[0], pts[-1]
+        delta = int(last["total"] - first["total"])
+        var = (delta / first["total"] * 100.0) if first["total"] else 0.0
+        span = max(1, (datetime.date.fromisoformat(last["d"])
+                       - datetime.date.fromisoformat(first["d"])).days)
+        rythme_mois = delta / span * 30.0
+        e = discord.Embed(title="📈 Évolution du patrimoine — %d derniers jours" % d,
+                          colour=0x2ECC71 if delta >= 0 else 0xE74C3C)
+        e.add_field(name="Du %s au %s" % (first["d"], last["d"]),
+                    value="**%s** → **%s**\nVariation : **%s** (%+.1f%%)"
+                          % (fmt_xof(first["total"]), fmt_xof(last["total"]),
+                             ("+" if delta >= 0 else "−") + fmt_xof(abs(delta)), var),
+                    inline=False)
+        e.add_field(name="Graphe (total)",
+                    value="`%s`" % sparkline([p["total"] for p in pts]), inline=False)
+        det = []
+        for key, lab in (("momo", "📱 MoMo"), ("nsia", "🏛 NSIA"), ("bg", "📈 Bitget")):
+            dd = int(last.get(key, 0) - first.get(key, 0))
+            det.append("%s : %s" % (lab, ("+" if dd >= 0 else "−") + fmt_xof(abs(dd))))
+        e.add_field(name="Par poste", value="\n".join(det), inline=False)
+        SEUIL = 12_000_000  # patrimoine cible (100k/mois passif — cf. /analyse)
+        if last["total"] >= SEUIL:
+            e.add_field(name="🎯 Objectif 12M", value="Seuil déjà atteint 🎉", inline=False)
+        elif rythme_mois > 0:
+            eta = datetime.date.fromisoformat(last["d"]) + datetime.timedelta(
+                days=int((SEUIL - last["total"]) / rythme_mois * 30))
+            e.add_field(name="🎯 Projection auto-financement (12M)",
+                        value="Rythme actuel : **+%s / mois** → seuil atteint vers **%s**"
+                              % (fmt_xof(rythme_mois), eta.strftime("%m/%Y")), inline=False)
+        else:
+            e.add_field(name="🎯 Projection",
+                        value="Rythme actuel : **−%s / mois** (négatif sur la fenêtre)"
+                              % fmt_xof(abs(rythme_mois)), inline=False)
+        return e
+
     class PanelView(discord.ui.View):
         def __init__(self):
             super().__init__(timeout=None)
             if PUBLIC_URL:
                 self.add_item(discord.ui.Button(label="Ouvrir l'app", emoji="🌐",
                               url="%s/?token=%s" % (PUBLIC_URL, AUTH_TOKEN), row=1))
+
+        @discord.ui.button(label="Historique", emoji="📉",
+                           style=discord.ButtonStyle.secondary, custom_id="nexus:histo", row=3)
+        async def b_histo(self, interaction, button):
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            try:
+                await refresh_bitget_state(HTTP_SESSION)
+                record_snapshot()
+                emb = build_history_embed(30)
+                if emb is None:
+                    await interaction.followup.send(
+                        "Pas encore assez d'historique — le bot enregistre 1 point par jour, "
+                        "reviens demain 😉", ephemeral=True)
+                else:
+                    await interaction.followup.send(embed=emb, ephemeral=True)
+            except Exception as ex:
+                await interaction.followup.send("Erreur historique : %s" % ex, ephemeral=True)
 
         @discord.ui.button(label="Rapport complet", emoji="📊",
                            style=discord.ButtonStyle.primary, custom_id="nexus:report", row=0)
@@ -1813,13 +1874,29 @@ if discord is not None:
             title="🛰️ NEXUS — Panneau de contrôle",
             description="Pilote toute ta **holding & finance** d'un clic. Voici ce que fait chaque bouton :",
             color=GOLD)
+        # Résumé live : patrimoine consolidé + tendance vs hier + mini-graphe 14 j
+        try:
+            record_snapshot()
+            c = consolidated_total()
+            hist = STATE.get("history") or []
+            trend = ""
+            if len(hist) >= 2 and hist[-2].get("total"):
+                dv = hist[-1]["total"] - hist[-2]["total"]
+                trend = "  ·  %s%s vs hier" % ("+" if dv >= 0 else "−", fmt_xof(abs(dv)))
+            spark = sparkline([p["total"] for p in hist[-14:]]) if len(hist) >= 2 else ""
+            emb.add_field(name="💰 Patrimoine actuel",
+                          value="**%s**%s%s" % (fmt_xof(c["total"]), trend,
+                                                ("\n`%s` (14 j)" % spark) if spark else ""),
+                          inline=False)
+        except Exception as _e:
+            log.warning("panel resume: %s", _e)
         emb.add_field(name="🏦 Voir mes soldes", value=(
             "🏦 **Patrimoine total** — tout consolidé (MoMo + NSIA + Bitget)\n"
             "📈 **Bitget** — détail spot / earn / staking\n"
             "💸 **Récap MoMo** · 🏛 **NSIA** · 💱 **Solde MoMo**"), inline=False)
         emb.add_field(name="📊 Rapports", value=(
             "📊 **Rapport complet** · 📅 **7 j** · 🗓️ **14 j** · 📆 **30 j** · 📊 **90 j**\n"
-            "📄 **PDF 30 j** · 🗒️ **PDF 7 j**"), inline=False)
+            "📄 **PDF 30 j** · 🗒️ **PDF 7 j** · 📉 **Historique** (graphe + projection 12M)"), inline=False)
         emb.add_field(name="⚙️ Contrôle & maintenance", value=(
             "✨ **Tout actualiser** · 🔄 **Synchroniser** · 🔁 **Rafraîchir panneau**\n"
             "🧹 **Nettoyer doublons** · ⚙️ **État serveur** · ♻️ **Re-scan** · 🧨 **RESET**\n"
@@ -1830,9 +1907,10 @@ if discord is not None:
             "**MTN / Moov** met à jour ton **solde**."), inline=False)
         emb.add_field(name="⌨️ Commandes", value=(
             "`/solde` `/bitget` `/momo` `/nsia`\n"
-            "`/rapport` `/recap [jours]` `/pdf [jours]`\n"
-            "`/sync` `/etat` `/panel` `/aide`"), inline=False)
-        emb.set_footer(text="NEXUS • toujours en ligne • mis à jour en continu")
+            "`/rapport` `/recap [jours]` `/historique [jours]` `/pdf [jours]`\n"
+            "`/analyse` `/sync` `/etat` `/panel` `/aide`"), inline=False)
+        now = datetime.datetime.utcnow() + datetime.timedelta(hours=1)
+        emb.set_footer(text="NEXUS • alertes auto ±%.0f%% • MAJ %s" % (ALERT_PCT, now.strftime("%d/%m %H:%M")))
         view = PanelView()
         msg_id = STATE.get("panel_msg")
         if msg_id:
@@ -2002,49 +2080,13 @@ async def run_discord(http_session):
         d = max(2, min(int(jours), 365))
         await refresh_bitget_state(HTTP_SESSION)
         record_snapshot()
-        hist = STATE.get("history") or []
-        cutoff = ((datetime.datetime.utcnow() + datetime.timedelta(hours=1)).date()
-                  - datetime.timedelta(days=d)).isoformat()
-        pts = [p for p in hist if p.get("d", "") >= cutoff]
-        if len(pts) < 2:
+        emb = build_history_embed(d)
+        if emb is None:
             await interaction.followup.send(
-                "Pas encore assez d'historique (%d point aujourd'hui). Le bot enregistre "
-                "1 point par jour automatiquement — reviens demain 😉" % len(pts), ephemeral=True)
+                "Pas encore assez d'historique. Le bot enregistre 1 point par jour "
+                "automatiquement — reviens demain 😉", ephemeral=True)
             return
-        first, last = pts[0], pts[-1]
-        delta = int(last["total"] - first["total"])
-        var = (delta / first["total"] * 100.0) if first["total"] else 0.0
-        span = max(1, (datetime.date.fromisoformat(last["d"])
-                       - datetime.date.fromisoformat(first["d"])).days)
-        rythme_mois = delta / span * 30.0
-        e = discord.Embed(title="📈 Évolution du patrimoine — %d derniers jours" % d,
-                          colour=0x2ECC71 if delta >= 0 else 0xE74C3C)
-        e.add_field(name="Du %s au %s" % (first["d"], last["d"]),
-                    value="**%s** → **%s**\nVariation : **%s** (%+.1f%%)"
-                          % (fmt_xof(first["total"]), fmt_xof(last["total"]),
-                             ("+" if delta >= 0 else "−") + fmt_xof(abs(delta)), var),
-                    inline=False)
-        e.add_field(name="Graphe (total)",
-                    value="`%s`" % sparkline([p["total"] for p in pts]), inline=False)
-        det = []
-        for key, lab in (("momo", "📱 MoMo"), ("nsia", "🏛 NSIA"), ("bg", "📈 Bitget")):
-            dd = int(last.get(key, 0) - first.get(key, 0))
-            det.append("%s : %s" % (lab, ("+" if dd >= 0 else "−") + fmt_xof(abs(dd))))
-        e.add_field(name="Par poste", value="\n".join(det), inline=False)
-        SEUIL = 12_000_000  # patrimoine cible (100k/mois passif — cf. /analyse)
-        if last["total"] >= SEUIL:
-            e.add_field(name="🎯 Objectif 12M", value="Seuil déjà atteint 🎉", inline=False)
-        elif rythme_mois > 0:
-            eta = datetime.date.fromisoformat(last["d"]) + datetime.timedelta(
-                days=int((SEUIL - last["total"]) / rythme_mois * 30))
-            e.add_field(name="🎯 Projection auto-financement (12M)",
-                        value="Rythme actuel : **+%s / mois** → seuil atteint vers **%s**"
-                              % (fmt_xof(rythme_mois), eta.strftime("%m/%Y")), inline=False)
-        else:
-            e.add_field(name="🎯 Projection",
-                        value="Rythme actuel : **−%s / mois** (négatif sur la fenêtre)"
-                              % fmt_xof(abs(rythme_mois)), inline=False)
-        await interaction.followup.send(embed=e, ephemeral=True)
+        await interaction.followup.send(embed=emb, ephemeral=True)
 
     @tree.command(name="pdf", description="Rapport patrimoine en PDF sur N jours (défaut 30)")
     @discord.app_commands.describe(jours="Nombre de jours (1 à 365, défaut 30)")
@@ -2164,11 +2206,15 @@ async def run_discord(http_session):
         except Exception as e:
             sys.stderr.write("[discord] on_message err: %s\n" % e)
 
+    # Laisse remonter les erreurs a main() qui gere la strategie de reconnexion.
     try:
         await client.start(DISCORD_TOKEN)
-    except Exception as e:
-        sys.stderr.write("[discord] connexion impossible: %s\n" % e)
-        print("[discord] echec connexion - l'API HTTP et le proxy Bitget restent actifs.")
+    finally:
+        if not client.is_closed():
+            try:
+                await client.close()
+            except Exception:
+                pass
 
 # ----------------------- Main -----------------------
 async def main():
@@ -2190,7 +2236,28 @@ async def main():
     if not (BITGET_KEY and BITGET_SECRET and BITGET_PASS):
         log.info("Bitget non configure — le proxy /bitget renverra une erreur tant que les cles ne sont pas definies.")
     app = await start_http()
-    await run_discord(app["session"])
+    # ---- Connexion Discord AUTO-RETRY ----
+    # Avant : un seul echec de connexion au demarrage laissait le bot hors ligne
+    # pour toujours (HTTP vivant, Discord mort). Maintenant : reconnexion sans fin
+    # avec backoff progressif ; seuls le token invalide / intents manquants arretent.
+    delay = 30
+    while True:
+        try:
+            await run_discord(app["session"])
+            log.warning("[discord] session fermee proprement — pas de reconnexion.")
+            break
+        except discord.LoginFailure as e:
+            log.error("[discord] FATAL: TOKEN INVALIDE (DISCORD_TOKEN dans Render a regenerer) : %s", e)
+            break
+        except discord.PrivilegedIntentsRequired as e:
+            log.error("[discord] FATAL: intent 'Message Content' non coche sur "
+                      "discord.com/developers -> Bot -> Privileged Gateway Intents : %s", e)
+            break
+        except Exception as e:
+            log.error("[discord] connexion perdue/echouee (%s: %s) — nouvel essai dans %ds",
+                      type(e).__name__, e, delay)
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 900)   # 30s -> 60 -> ... -> 15 min max
     # garde le process vivant meme si Discord est desactive
     await asyncio.Event().wait()
 
