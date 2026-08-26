@@ -1,4 +1,6 @@
-discord.py>=2.3.0
-aiohttp>=3.9.0
-pdfplumber>=0.11.0
-fpdf2>=2.7.0
+# Bornes hautes : sans elles, une version majeure publiee entre deux deploiements
+# Render (qui reinstalle a chaque build) pouvait casser la prod sans changement de code.
+discord.py>=2.3.0,<3
+aiohttp>=3.9.0,<4
+pdfplumber>=0.11.0,<1
+fpdf2>=2.7.0,<3

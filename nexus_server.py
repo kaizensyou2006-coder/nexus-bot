@@ -20,10 +20,12 @@ Cles config utiles : DISCORD_TOKEN, DISCORD_CHANNEL, PANEL_CHANNEL, GUILD_ID,
 ========================================================================
 """
 import os, sys, json, time, hmac, hashlib, base64, asyncio, re, io, itertools, datetime
+import secrets, signal, threading
 import urllib.request
 from urllib.parse import parse_qs
 import aiohttp
 from aiohttp import web
+from aiohttp.abc import AbstractAccessLogger
 
 # ----------------------- Logging -----------------------
 # Logs structures (horodatage + niveau) visibles dans les logs Render.
@@ -75,7 +77,10 @@ UPSTASH_URL     = _conf("UPSTASH_REDIS_REST_URL")     # base de donnees Upstash 
 UPSTASH_TOKEN   = _conf("UPSTASH_REDIS_REST_TOKEN")
 GUILD_ID        = _conf("GUILD_ID")                   # optionnel : sync rapide des slash-commands
 PUBLIC_URL      = _conf("PUBLIC_URL").rstrip("/")     # ex: http://34.x.x.x:8080  (pour le bouton "Ouvrir l'app")
-AUTH_TOKEN      = _conf("AUTH_TOKEN", "nexus229")
+AUTH_TOKEN      = _conf("AUTH_TOKEN")
+# Jeton par defaut connu publiquement (present dans le depot) = aucun secret.
+# On le refuse : sans AUTH_TOKEN valide, l'API repond 401 au lieu de s'ouvrir.
+AUTH_WEAK       = (not AUTH_TOKEN) or AUTH_TOKEN == "nexus229" or len(AUTH_TOKEN) < 16
 BITGET_KEY      = _conf("BITGET_KEY")
 BITGET_SECRET   = _conf("BITGET_SECRET")
 BITGET_PASS     = _conf("BITGET_PASS")
@@ -85,6 +90,18 @@ USD_XOF         = float(_conf("USD_XOF") or "640")   # taux de repli USD->FCFA s
 _USD_XOF_LIVE   = USD_XOF                             # taux USD->FCFA en direct (memes source que l'app)
 _USD_XOF_TS     = 0                                   # horodatage du dernier rafraichissement
 BITGET_BASE     = "https://api.bitget.com"
+# Chemins Bitget joignables via le proxy /bitget (GET uniquement) : consultation
+# de solde et de prix, rien qui puisse deplacer des fonds.
+BITGET_READ_PATHS = (
+    "/api/v2/account/all-account-balance",
+    "/api/v2/spot/account/assets",
+    "/api/v2/spot/market/tickers",
+    "/api/v2/earn/account/assets",
+    "/api/v2/mix/account/accounts",
+    "/api/v2/spot/account/bills",
+)
+BITGET_ALLOW_WRITE = (_conf("BITGET_ALLOW_WRITE") or "").lower() in ("1", "true", "yes")
+GEN_CMD = "python -c 'import secrets;print(secrets.token_urlsafe(32))'"
 
 # Session HTTP partagee (definie au demarrage) — utilisee par le bot Discord pour Bitget/OCR.
 HTTP_SESSION = None
@@ -109,6 +126,18 @@ STATE = {
     "panel_msg": None,   # id du message du panneau de controle (pour le re-editer)
     "updatedAt": None,
 }
+
+# ----------------------- Dates -----------------------
+# datetime.utcnow() est deprecie depuis Python 3.12 (et renvoyait un datetime naif
+# qu'on decalait a la main). On travaille en heure du Benin (UTC+1), explicitement.
+WAT = datetime.timezone(datetime.timedelta(hours=1))
+
+def now_wat():
+    """Maintenant, en heure du Benin (UTC+1)."""
+    return datetime.datetime.now(WAT)
+
+def today_wat():
+    return now_wat().date()
 
 # ----------------------- Formatage -----------------------
 def fmt_xof(n):
@@ -135,48 +164,178 @@ def _upstash(cmd):
     with urllib.request.urlopen(req, timeout=10) as r:
         return json.loads(r.read().decode("utf-8")).get("result")
 
+# Vrai/faux : la lecture initiale d'Upstash a-t-elle abouti ?
+# Si Upstash est configure mais injoignable au demarrage, l'ancien code repartait
+# sur l'etat local (souvent vide sur Render, disque ephemere) PUIS ecrasait la
+# base distante a la premiere sauvegarde : tout l'historique disparaissait a cause
+# d'une simple coupure reseau. Tant que ce drapeau est faux, on n'ecrit plus rien
+# vers Upstash (lecture seule distante) et on le crie dans les logs.
+_UPSTASH_OK = True
+
 def load_state():
-    global STATE
+    global STATE, _UPSTASH_OK
     # 1) Base de donnees Upstash si configuree (persiste meme apres redemarrage)
     if UPSTASH_URL and UPSTASH_TOKEN:
-        try:
-            raw = _upstash(["GET", "nexus_state"])
-            if raw:
-                STATE.update(json.loads(raw))
-                print("[state] charge depuis Upstash (%d octets)" % len(raw))
-                return
-        except Exception as e:
-            sys.stderr.write("[state] upstash load: %s\n" % e)
+        last = None
+        for essai in range(3):                    # 3 essais : un timeout ne doit pas couter l'historique
+            try:
+                raw = _upstash(["GET", "nexus_state"])
+                if raw:
+                    STATE.update(json.loads(raw))
+                    log.info("etat charge depuis Upstash (%d octets)", len(raw))
+                    prune_state()
+                    return
+                log.info("Upstash joignable mais vide — premier demarrage ?")
+                last = None
+                break                             # base vide : ce n'est PAS une panne
+            except Exception as e:
+                last = e
+                log.warning("lecture Upstash (essai %d/3): %s", essai + 1, e)
+                time.sleep(1.5 * (essai + 1))
+        if last is not None:
+            _UPSTASH_OK = False
+            log.critical("Upstash INJOIGNABLE au demarrage (%s). L'etat distant ne sera PAS "
+                         "ecrase (sauvegarde locale uniquement) pour ne pas perdre l'historique. "
+                         "Redemarre le service une fois Upstash de nouveau accessible.", last)
     # 2) Sinon fichier local
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             STATE.update(json.load(f))
-    except Exception:
-        pass
+        log.info("etat charge depuis %s", STATE_FILE)
+    except FileNotFoundError:
+        log.info("aucun etat local (%s) — demarrage a vide.", STATE_FILE)
+    except Exception as e:
+        # Fichier present mais illisible/corrompu : le signaler fort, sinon on
+        # repart a zero en silence et la premiere sauvegarde ecrase le fichier.
+        log.error("etat local illisible (%s) : %s — demarrage a vide.", STATE_FILE, e)
+    prune_state()
+
+def prune_state():
+    """Remet l'etat dans ses bornes et dans le bon type apres chargement.
+
+    Deux raisons : (1) un etat sauvegarde AVANT l'ajout des plafonds peut contenir
+    des dizaines de milliers d'operations ou de points d'historique, qui repartent
+    ensuite a chaque sauvegarde ; (2) une valeur d'un type inattendu (base modifiee
+    a la main, JSON tronque) faisait planter tous les calculs plus loin."""
+    if not isinstance(STATE.get("momo"), list):
+        if STATE.get("momo") is not None:
+            log.error("etat: 'momo' n'est pas une liste (%s) — reinitialise.", type(STATE.get("momo")).__name__)
+        STATE["momo"] = []
+    STATE["momo"] = [m for m in STATE["momo"] if isinstance(m, dict)]
+    if len(STATE["momo"]) > MOMO_MAX:
+        log.warning("etat: %d operations MoMo -> plafonne a %d", len(STATE["momo"]), MOMO_MAX)
+        STATE["momo"] = STATE["momo"][-MOMO_MAX:]
+    if not isinstance(STATE.get("balances"), dict):
+        STATE["balances"] = {}
+    hist = STATE.get("history")
+    if not isinstance(hist, list):
+        hist = []
+    hist = [p for p in hist if isinstance(p, dict) and p.get("d")]
+    if len(hist) > HISTORY_MAX:
+        log.warning("etat: %d points d'historique -> plafonne a %d", len(hist), HISTORY_MAX)
+    STATE["history"] = hist[-HISTORY_MAX:]
+    if not isinstance(STATE.get("recap_keys"), dict):
+        STATE["recap_keys"] = {}
+    # alert_flags ne servait qu'a ne pas repeter l'alerte du jour : tout le reste
+    # est du poids mort qui grossit indefiniment dans la base.
+    prune_alert_flags()
+
+def prune_alert_flags():
+    """Ne garde que le drapeau d'alerte du jour (les autres ne servent plus a rien)."""
+    flags = STATE.get("alert_flags")
+    if not isinstance(flags, dict):
+        STATE["alert_flags"] = {}
+        return
+    key = "alert_" + today_wat().isoformat()
+    for k in list(flags):
+        if k != key:
+            flags.pop(k, None)
+
+# --- Ecriture Upstash asynchrone ---------------------------------------------
+# save_state() etait appele depuis les handlers HTTP et les boutons Discord, et
+# faisait un urlopen() BLOQUANT (jusqu'a 10 s) : pendant ce temps toute la boucle
+# asyncio etait figee — heartbeat Discord compris. C'est la cause la plus probable
+# des deconnexions que le backoff ne faisait que rattraper.
+# Desormais : le fichier local est ecrit tout de suite (rapide), et l'envoi reseau
+# part dans un thread dedie qui regroupe les ecritures rapprochees.
+_save_lock    = threading.Lock()
+_save_wake    = threading.Event()
+_save_payload = {"data": None}
+_save_thread  = None
+
+def _save_worker():
+    while True:
+        _save_wake.wait()
+        _save_wake.clear()
+        time.sleep(1.0)                      # regroupe les rafales d'ecritures
+        with _save_lock:
+            data = _save_payload["data"]
+            _save_payload["data"] = None
+        if data is None:
+            continue
+        try:
+            _upstash(["SET", "nexus_state", data])
+        except Exception as e:
+            log.warning("upstash save: %s", e)
+
+def flush_state():
+    """Pousse l'etat en attente vers Upstash en bloquant. Utilise a l'arret."""
+    with _save_lock:
+        data = _save_payload["data"]
+        _save_payload["data"] = None
+    if data is None or not (UPSTASH_URL and UPSTASH_TOKEN) or not _UPSTASH_OK:
+        return
+    try:
+        _upstash(["SET", "nexus_state", data])
+        log.info("etat sauvegarde avant l'arret")
+    except Exception as e:
+        log.error("flush_state: %s", e)
 
 def save_state():
+    global _save_thread
     STATE["updatedAt"] = int(time.time() * 1000)
     data = json.dumps(STATE, ensure_ascii=False)
     try:
         with open(STATE_FILE, "w", encoding="utf-8") as f:
             f.write(data)
     except Exception as e:
-        sys.stderr.write("[state] file save error: %s\n" % e)
-    if UPSTASH_URL and UPSTASH_TOKEN:
-        try:
-            _upstash(["SET", "nexus_state", data])
-        except Exception as e:
-            sys.stderr.write("[state] upstash save: %s\n" % e)
+        log.warning("ecriture fichier etat: %s", e)
+    if not (UPSTASH_URL and UPSTASH_TOKEN) or not _UPSTASH_OK:
+        return
+    with _save_lock:
+        _save_payload["data"] = data
+    if _save_thread is None:
+        _save_thread = threading.Thread(target=_save_worker, name="nexus-state", daemon=True)
+        _save_thread.start()
+    _save_wake.set()
 
 def reset_state():
-    """Remet tout a zero (MoMo, NSIA, Bitget, soldes, patrimoine) — efface aussi la base."""
+    """Remet les DONNEES COURANTES a zero (MoMo, NSIA, Bitget, soldes, patrimoine).
+
+    Volontairement CONSERVE :
+      - history : le releve quotidien du patrimoine est la seule donnee qu'on ne
+        peut pas reconstruire (les operations, elles, se re-scannent depuis le
+        salon d'import). L'effacer par confort ferait perdre des mois de courbe.
+      - panel_msg : le message du panneau existe toujours cote Discord.
+    Renvoie un resume de ce qui a ete efface, pour pouvoir l'annoncer."""
+    efface = {"momo": len(STATE.get("momo") or []),
+              "nsia": bool(STATE.get("nsia")),
+              "bitget": bool(STATE.get("bitget")),
+              "balances": len(STATE.get("balances") or {}),
+              "patrimoine": bool(STATE.get("patrimoine")),
+              "business": bool(STATE.get("business")),
+              "history_conserve": len(STATE.get("history") or [])}
     STATE["momo"] = []
     STATE["nsia"] = None
     STATE["bitget"] = None
     STATE["balances"] = {}
     STATE["patrimoine"] = None
+    STATE["business"] = None
     STATE["recap_keys"] = {}
+    STATE["alert_flags"] = {}
     save_state()
+    log.warning("RESET des donnees demande : %s", efface)
+    return efface
 
 # ----------------------- Bitget : signature serveur -----------------------
 def bitget_sign(ts, method, path, body=""):
@@ -202,12 +361,21 @@ async def bitget_request(session, method, path, body=""):
         text = await r.text()
         return r.status, text
 
-async def bitget_overview(session):
+# Chaque appel a bitget_overview() tape 4 endpoints Bitget. Le rapport, le recap,
+# le panneau et /solde l'appelaient chacun de leur cote : quelques clics de suite
+# suffisaient a frôler la limite de debit. Cache court partage par tous.
+_BG_CACHE = {"ts": 0.0, "data": None}
+BG_CACHE_TTL = float(_conf("BG_CACHE_TTL") or "60")
+
+async def bitget_overview(session, force=False):
     """Vue complete du compte Bitget en USDT.
     Renvoie un dict {total, spot, earn, others, holdings:[(coin,amt,val)]} ou None.
-    'total' = valeur de TOUS les comptes (spot + earn + bots + futures...), pas juste le spot."""
+    'total' = valeur de TOUS les comptes (spot + earn + bots + futures...), pas juste le spot.
+    Resultat mis en cache BG_CACHE_TTL secondes ; force=True pour ignorer le cache."""
     if not (BITGET_KEY and BITGET_SECRET and BITGET_PASS):
         return None
+    if not force and _BG_CACHE["data"] is not None and time.time() - _BG_CACHE["ts"] < BG_CACHE_TTL:
+        return _BG_CACHE["data"]
     try:
         await refresh_usd_xof(session)   # aligne le taux FCFA du Discord sur celui de l'app
     except Exception:
@@ -231,7 +399,7 @@ async def bitget_overview(session):
                     res["others"] += v
             got_total = True
     except Exception as e:
-        sys.stderr.write("[bitget] all-account-balance: %s\n" % e)
+        log.warning("bitget all-account-balance: %s", e)
     # 2) Prix pour valoriser les positions
     prices = {}
     try:
@@ -245,7 +413,7 @@ async def bitget_overview(session):
                 except Exception:
                     pass
     except Exception as e:
-        sys.stderr.write("[bitget] tickers: %s\n" % e)
+        log.warning("bitget tickers: %s", e)
     def _val(coin, amt):
         return amt if coin in ("USDT", "USDC", "USD", "BUSD") else amt * prices.get(coin + "USDT", 0.0)
     # 3) Detail Spot
@@ -258,7 +426,7 @@ async def bitget_overview(session):
                 c = str(a.get("coin", "")).upper()
                 res["holdings"].append((c, amt, _val(c, amt)))
     except Exception as e:
-        sys.stderr.write("[bitget] spot assets: %s\n" % e)
+        log.warning("bitget spot assets: %s", e)
     # 4) Detail Earn (epargne / DCA)
     try:
         _, t4 = await bitget_request(session, "GET", "/api/v2/earn/account/assets")
@@ -268,7 +436,7 @@ async def bitget_overview(session):
                 c = str(e.get("coin", "")).upper()
                 res["holdings"].append((c + " ⟢Earn", amt, _val(c, amt)))
     except Exception as e:
-        sys.stderr.write("[bitget] earn assets: %s\n" % e)
+        log.warning("bitget earn assets: %s", e)
     # Fallback : si all-account-balance vide, total = somme des positions
     if not got_total or res["total"] <= 0:
         res["total"] = sum(v for _, _, v in res["holdings"])
@@ -300,8 +468,9 @@ async def bitget_overview(session):
         res["total"] += stk_val + extra
         res["earn"] = max(0.0, res["total"] - res["spot"] - res["others"])  # staking compte comme Earn
     except Exception as e:
-        sys.stderr.write("[bitget] calib: %s\n" % e)
+        log.warning("bitget calage staking: %s", e)
     res["holdings"].sort(key=lambda x: -x[2])
+    _BG_CACHE["data"], _BG_CACHE["ts"] = res, time.time()
     return res
 
 # ----------------------- MoMo : detection transactions -----------------------
@@ -491,10 +660,17 @@ def add_momo(items):
         STATE["momo"].append(it)
         existing.add(key)
         n += 1
-    STATE["momo"] = STATE["momo"][-800:]
+    # 800 operations, c'etait ~3 mois d'usage : /recap 365 et les rapports annuels
+    # travaillaient sur un historique deja ampute, sans le dire.
+    if len(STATE["momo"]) > MOMO_MAX:
+        drop = len(STATE["momo"]) - MOMO_MAX
+        log.warning("historique MoMo plafonne : %d operation(s) les plus anciennes ecartees", drop)
+        STATE["momo"] = STATE["momo"][-MOMO_MAX:]
     if n:
         save_state()
     return n
+
+MOMO_MAX = int(_conf("MOMO_MAX") or "5000")   # operations conservees (~3 ans)
 
 _recent_raw = []  # [(ts, texte)] dedup des SMS bruts recus dans les 5 dernieres minutes
 
@@ -514,7 +690,7 @@ def momo_ingest_text(text, src="sms"):
         it["src"] = src
     n = add_momo(items)
     if not n:
-        sys.stderr.write("[momo] SMS recu mais aucun montant detecte: %r\n" % text[:120])
+        log.info("SMS recu mais aucun montant detecte: %r", text[:120])
     return n
 
 # ----------------------- NSIA : releve de portefeuille -----------------------
@@ -634,7 +810,7 @@ def parse_pdf_bytes(data):
             for page in pdf.pages:
                 text += (page.extract_text() or "") + "\n"
     except Exception as e:
-        sys.stderr.write("[pdf] %s\n" % e)
+        log.warning("lecture PDF impossible: %s", e)
         return None, ""
     m = re.search(r"NEXUS_DATA\s*=\s*(\{.*\})", text, re.S)
     if m:
@@ -666,45 +842,232 @@ async def ocr_image(session, data, filename, is_pdf=False):
             res = j.get("ParsedResults") or []
             return " ".join(p.get("ParsedText", "") for p in res)
     except Exception as e:
-        sys.stderr.write("[ocr] %s\n" % e)
+        log.warning("ocr.space: %s", e)
         return ""
 
 # ----------------------- Serveur HTTP -----------------------
-def cors(resp):
-    # Restreint aux origines connues : l'app est servie par CE serveur (PUBLIC_URL).
-    resp.headers["Access-Control-Allow-Origin"] = PUBLIC_URL or "*"
+def cors(resp, request=None):
+    """CORS restreint. L'app est servie par CE serveur : la seule origine legitime
+    est PUBLIC_URL. Sans PUBLIC_URL on n'autorise AUCUNE origine tierce (au lieu de "*",
+    qui laissait n'importe quel site appeler l'API avec le jeton de l'utilisateur)."""
+    allowed = [o for o in (PUBLIC_URL, "http://localhost:%d" % PORT, "http://127.0.0.1:%d" % PORT) if o]
+    origin = (request.headers.get("Origin", "") if request is not None else "")
+    if origin and origin in allowed:
+        resp.headers["Access-Control-Allow-Origin"] = origin
+    elif PUBLIC_URL:
+        resp.headers["Access-Control-Allow-Origin"] = PUBLIC_URL
+    resp.headers["Vary"] = "Origin"
     resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-    resp.headers["Access-Control-Allow-Headers"] = "*"
+    resp.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, x-auth"
+    resp.headers["Access-Control-Max-Age"] = "600"
+    # Ces reponses contiennent des soldes : ni cache navigateur, ni cache proxy,
+    # et pas de referer sortant (l'URL peut encore contenir ?token= si l'utilisateur
+    # est arrive par le bouton Discord).
+    resp.headers.setdefault("Cache-Control", "no-store")
+    resp.headers.setdefault("Referrer-Policy", "no-referrer")
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("X-Frame-Options", "DENY")
     return resp
 
-def check_token(request):
-    # Accepte le jeton via (par ordre de preference, du plus sur au moins sur) :
-    #   1) header  Authorization: Bearer <token>   (recommande — hors URL/logs)
-    #   2) header  x-auth: <token>
-    #   3) query   ?token=<token>                   (compat app existante)
+AUTH_COOKIE = "nexus_auth"
+
+def _token_of(request):
+    """Extrait le jeton presente par le client, du plus sur au moins sur :
+       1) Authorization: Bearer <token>   2) x-auth:   3) cookie   4) ?token= (compat)."""
     auth = request.headers.get("Authorization", "")
     bearer = auth[7:].strip() if auth[:7].lower() == "bearer " else ""
-    tok = bearer or request.headers.get("x-auth", "") or request.query.get("token", "")
-    return (not AUTH_TOKEN) or tok == AUTH_TOKEN
+    return (bearer
+            or request.headers.get("x-auth", "")
+            or request.cookies.get(AUTH_COOKIE, "")
+            or request.query.get("token", ""))
+
+def check_token(request):
+    """Verifie le jeton. Deux durcissements vs la version precedente :
+       - comparaison a temps constant (une comparaison ==  fuit la longueur du prefixe
+         correct et rend une attaque par mesure de temps possible) ;
+       - si AUTH_TOKEN n'est pas configure, on REFUSE tout au lieu de tout ouvrir."""
+    if AUTH_WEAK or not AUTH_TOKEN:
+        # 'nexus229' figure en clair dans le depot : l'accepter revient a n'avoir
+        # aucune authentification. Mieux vaut un service en panne, bruyant dans les
+        # logs, qu'un tableau de bord financier ouvert a qui lit le README.
+        return False
+    return hmac.compare_digest(_token_of(request), AUTH_TOKEN)
 
 async def h_options(request):
-    return cors(web.Response(status=204))
+    return cors(web.Response(status=204), request)
+
+# ----------------------- Anti-force brute -----------------------
+# Le jeton etait devinable a l'infini : aucune limite de tentatives. On ajoute
+# une fenetre glissante par IP (memoire process, suffisant pour une instance).
+RATE_MAX_REQ   = int(_conf("RATE_MAX_REQ") or "120")   # requetes / minute / IP
+AUTH_MAX_FAIL  = int(_conf("AUTH_MAX_FAIL") or "10")   # echecs d'auth avant blocage
+AUTH_BLOCK_SEC = int(_conf("AUTH_BLOCK_SEC") or "900") # duree du blocage (15 min)
+_rate = {}        # ip -> [timestamps]
+_authfail = {}    # ip -> (nb_echecs, ts_dernier)
+
+def _client_ip(request):
+    fwd = request.headers.get("X-Forwarded-For", "")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return (request.remote or "?")
+
+def rate_ok(request):
+    """False si l'IP depasse le quota ou est bloquee pour echecs d'auth repetes."""
+    ip = _client_ip(request)
+    now = time.time()
+    fails, last = _authfail.get(ip, (0, 0))
+    if fails >= AUTH_MAX_FAIL and now - last < AUTH_BLOCK_SEC:
+        return False
+    hits = [t for t in _rate.get(ip, []) if now - t < 60]
+    hits.append(now)
+    _rate[ip] = hits
+    if len(_rate) > 2000:                      # purge des IP inactives
+        for k in [k for k, v in _rate.items() if not v or now - v[-1] > 300]:
+            _rate.pop(k, None); _authfail.pop(k, None)
+    return len(hits) <= RATE_MAX_REQ
+
+def note_auth_fail(request):
+    ip = _client_ip(request)
+    fails, last = _authfail.get(ip, (0, 0))
+    now = time.time()
+    if now - last > AUTH_BLOCK_SEC:
+        fails = 0
+    _authfail[ip] = (fails + 1, now)
+    log.warning("auth refusee (%s) — %d echec(s)", ip, fails + 1)
+
+def note_auth_ok(request):
+    _authfail.pop(_client_ip(request), None)
+
+def guard(request):
+    """Controle commun a toutes les routes protegees.
+    Renvoie None si l'appel est autorise, sinon la reponse d'erreur a retourner."""
+    if not rate_ok(request):
+        return cors(web.json_response({"ok": False, "error": "too many requests"}, status=429), request)
+    if not check_token(request):
+        note_auth_fail(request)
+        return cors(web.json_response({"ok": False, "error": "bad token"}, status=401), request)
+    note_auth_ok(request)
+    return None
 
 async def h_ping(request):
-    return cors(web.Response(text="NEXUS server OK"))
+    # Publique (c'est la sonde du cron externe) mais soumise a la limite de debit :
+    # sans elle, /ping restait un point d'entree a marteler gratuitement.
+    if not rate_ok(request):
+        return web.Response(text="rate limited", status=429)
+    return cors(web.Response(text="NEXUS server OK"), request)
+
+async def h_health(request):
+    """Sonde de supervision : uniquement des infos non sensibles (pas de montants,
+    pas de jeton) pour pouvoir etre appelee par un cron externe sans authentification."""
+    if not rate_ok(request):
+        return web.Response(text="rate limited", status=429)
+    return cors(web.json_response({
+        "ok": True,
+        "uptime": int(time.time()) - START_TS,
+        "discord": bool(DISCORD_TOKEN and discord is not None),
+        "bitget": bool(BITGET_KEY and BITGET_SECRET and BITGET_PASS),
+        "auth": (not AUTH_WEAK),
+        "persistance": ("upstash" if (UPSTASH_URL and UPSTASH_TOKEN and _UPSTASH_OK)
+                        else ("upstash-degrade" if (UPSTASH_URL and UPSTASH_TOKEN) else "fichier")),
+        "updatedAt": STATE.get("updatedAt"),
+    }), request)
+
+# ---- Validation des donnees poussees par l'app -------------------------------
+# /state POST acceptait N'IMPORTE QUEL corps JSON et le recopiait tel quel dans
+# l'etat, qui est ensuite serialise a chaque sauvegarde et renvoye a tous les
+# clients : un corps de 50 Mo, ou un type inattendu, suffisait a saturer la
+# memoire de l'instance ou a faire planter les calculs.
+STATE_MAX_BYTES = int(_conf("STATE_MAX_KB") or "512") * 1024
+BUSINESS_NUM_KEYS = ("revM", "expM", "netM", "mrr", "arr", "caTotal", "depTotal")
+
+def _num_or_none(v):
+    """Nombre fini, ou None. Refuse NaN/Infini (json.dumps les ecrirait tels quels,
+    et le JSON produit devient illisible par le navigateur)."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if f != f or f in (float("inf"), float("-inf")):
+        return None
+    return f
+
+def sanitize_business(b):
+    """Ne garde que les champs attendus du resume revenus/depenses, en nombres surs."""
+    if not isinstance(b, dict):
+        raise ValueError("business doit etre un objet")
+    out = {}
+    for k in BUSINESS_NUM_KEYS:
+        if k in b:
+            n = _num_or_none(b.get(k))
+            if n is not None:
+                out[k] = n
+    cur = b.get("cur", "XOF")
+    out["cur"] = str(cur)[:8] if cur else "XOF"
+    ts = _num_or_none(b.get("ts"))
+    out["ts"] = int(ts) if ts is not None else int(time.time() * 1000)
+    return out
+
+def _json_depth(o, limit=40, d=0):
+    """Profondeur d'un objet JSON : au-dela de `limit`, la serialisation recursive
+    de save_state() partirait en RecursionError a CHAQUE sauvegarde ensuite."""
+    if d > limit:
+        raise ValueError("structure trop imbriquee")
+    if isinstance(o, dict):
+        for v in o.values():
+            _json_depth(v, limit, d + 1)
+    elif isinstance(o, list):
+        for v in o:
+            _json_depth(v, limit, d + 1)
+    return True
+
+def validate_patrimoine(obj):
+    """Le patrimoine vient de l'app : structure libre, mais bornee en taille et en
+    profondeur, et jamais autre chose qu'un objet ou une liste."""
+    if not isinstance(obj, (dict, list)):
+        raise ValueError("patrimoine doit etre un objet ou une liste")
+    _json_depth(obj)
+    taille = len(json.dumps(obj, ensure_ascii=False))
+    if taille > STATE_MAX_BYTES:
+        raise ValueError("patrimoine trop volumineux (%d octets, max %d)" % (taille, STATE_MAX_BYTES))
+    return obj
+
+async def _read_json(request, maxi=None):
+    """Lit un corps JSON en refusant tout ce qui depasse `maxi` octets, SANS le
+    charger d'abord en entier (await request.json() lisait tout, quelle que soit
+    la taille annoncee)."""
+    maxi = maxi or STATE_MAX_BYTES
+    if (request.content_length or 0) > maxi:
+        raise ValueError("corps trop volumineux (%s octets, max %d)" % (request.content_length, maxi))
+    raw = await request.content.read(maxi + 1)
+    if len(raw) > maxi:
+        raise ValueError("corps trop volumineux (max %d octets)" % maxi)
+    if not raw:
+        raise ValueError("corps vide")
+    body = json.loads(raw.decode("utf-8", "replace"))
+    if not isinstance(body, dict):
+        raise ValueError("le corps doit etre un objet JSON")
+    return body
 
 async def h_state(request):
-    if not check_token(request):
-        return cors(web.json_response({"ok": False, "error": "bad token"}, status=401))
+    denied = guard(request)
+    if denied is not None:
+        return denied
     if request.method == "POST":
         try:
-            body = await request.json()
-            STATE["patrimoine"] = body.get("patrimoine", STATE["patrimoine"])
+            body = await _read_json(request)
+            if body.get("patrimoine") is not None:
+                # .get(k, defaut) recopiait un null envoye par erreur et EFFACAIT
+                # le patrimoine ; on n'ecrit que sur une valeur reellement fournie.
+                STATE["patrimoine"] = validate_patrimoine(body["patrimoine"])
             if body.get("business") is not None:
-                STATE["business"] = body.get("business")
+                STATE["business"] = sanitize_business(body["business"])
             save_state()
+        except ValueError as e:
+            log.warning("/state POST refuse (%s): %s", _client_ip(request), e)
+            return cors(web.json_response({"ok": False, "error": str(e)}, status=400), request)
         except Exception as e:
-            return cors(web.json_response({"ok": False, "error": str(e)}, status=400))
+            log.error("/state POST: %s", e)
+            return cors(web.json_response({"ok": False, "error": "corps invalide"}, status=400), request)
     since = 0
     try:
         since = int(request.query.get("since", "0"))
@@ -716,98 +1079,243 @@ async def h_state(request):
         "patrimoine": STATE["patrimoine"],
         "momo": momo,
         "nsia": STATE["nsia"],
-        "balances": STATE.get("balances") or {},
+        # L'etat interne stocke {amount, ts} depuis le correctif des soldes ; l'app
+        # attend des nombres simples. On aplatit ici pour ne rien casser cote client.
+        "balances": {k: _balance_entry(v)[0] for k, v in (STATE.get("balances") or {}).items()},
+        "balanceSources": momo_balance_sources(),
         "bgCalib": STATE.get("bg_calib") or {"extra": 0, "staking": {}},
         "updatedAt": STATE["updatedAt"],
-    }))
+    }), request)
 
 async def h_bgcalib(request):
     """Calage Bitget (staking non vu par l'API) partage entre tous les appareils.
     GET  /bgcalib?token=...            -> renvoie {extra, override}
     POST /bgcalib?token=... {extra,override} -> enregistre."""
-    if not check_token(request):
-        return cors(web.json_response({"ok": False, "error": "bad token"}, status=401))
+    denied = guard(request)
+    if denied is not None:
+        return denied
     if request.method == "POST":
         try:
-            body = await request.json()
-            STATE["bg_calib"] = {"extra": float(body.get("extra", 0) or 0),
-                                 "staking": body.get("staking") or {}}
+            body = await _read_json(request, 64 * 1024)
+            extra = _num_or_none(body.get("extra", 0)) or 0.0
+            staking = body.get("staking") or {}
+            if not isinstance(staking, dict):
+                raise ValueError("staking doit etre un objet {coin: quantite}")
+            if len(staking) > 200:
+                raise ValueError("trop de lignes de staking (max 200)")
+            # Les quantites servent a valoriser le patrimoine : un texte ou un NaN
+            # ici, et le total consolide devenait faux ou plantait plus loin.
+            clean = {}
+            for coin, qty in staking.items():
+                q = _num_or_none(qty)
+                if q is None or q < 0:
+                    raise ValueError("quantite de staking invalide pour %r" % str(coin)[:20])
+                clean[str(coin).upper()[:16]] = q
+            STATE["bg_calib"] = {"extra": extra, "staking": clean}
             save_state()
+        except ValueError as e:
+            log.warning("/bgcalib POST refuse (%s): %s", _client_ip(request), e)
+            return cors(web.json_response({"ok": False, "error": str(e)}, status=400), request)
         except Exception as e:
-            return cors(web.json_response({"ok": False, "error": str(e)}, status=400))
-    return cors(web.json_response({"ok": True, "bgCalib": STATE.get("bg_calib") or {"extra": 0, "staking": {}}}))
+            log.error("/bgcalib POST: %s", e)
+            return cors(web.json_response({"ok": False, "error": "corps invalide"}, status=400), request)
+    return cors(web.json_response({"ok": True, "bgCalib": STATE.get("bg_calib") or {"extra": 0, "staking": {}}}), request)
 
 async def h_momo_ingest(request):
     """Reception d'un SMS MoMo depuis le telephone (MacroDroid).
     GET  /momo?token=...&text=LE_SMS   ou   POST /momo?token=... (corps texte/json/form)."""
-    if not check_token(request):
-        return cors(web.json_response({"ok": False, "error": "bad token"}, status=401))
-    text = request.query.get("text", "") or request.query.get("sms", "")
-    src = request.query.get("src", "sms")
+    denied = guard(request)
+    if denied is not None:
+        return denied
+    SMS_MAX = 65536
+    text = (request.query.get("text", "") or request.query.get("sms", ""))[:SMS_MAX]
+    src = str(request.query.get("src", "sms"))[:16]
     if request.method == "POST" and not text:
-        body = (await request.read())[:65536].decode("utf-8", "ignore")
+        # request.read() chargeait TOUT le corps avant de le tronquer : un POST de
+        # 100 Mo passait quand meme par la memoire de l'instance.
+        body = (await request.content.read(SMS_MAX + 1))[:SMS_MAX].decode("utf-8", "ignore")
         ct = request.headers.get("Content-Type", "")
         text = body
         if "json" in ct:
             try:
-                text = json.loads(body).get("text", body)
-            except Exception:
-                pass
+                j = json.loads(body)
+                text = j.get("text", body) if isinstance(j, dict) else body
+            except Exception as e:
+                log.info("/momo: corps JSON illisible, traite comme du texte brut (%s)", e)
         elif "form-urlencoded" in ct:
             pq = parse_qs(body)
             text = (pq.get("text") or pq.get("sms") or [body])[0]
-    n = momo_ingest_text(text, src)
-    return cors(web.json_response({"ok": True, "added": n}))
+    if not isinstance(text, str):
+        text = str(text)
+    n = momo_ingest_text(text[:SMS_MAX], src)
+    return cors(web.json_response({"ok": True, "added": n}), request)
 
 async def h_momo_inbox(request):
-    if not check_token(request):
-        return cors(web.json_response({"ok": False, "error": "bad token"}, status=401))
+    denied = guard(request)
+    if denied is not None:
+        return denied
     since = 0
     try:
         since = int(request.query.get("since", "0"))
     except Exception:
         since = 0
     data = [m for m in STATE["momo"] if m.get("ts", 0) > since]
-    return cors(web.json_response({"ok": True, "data": data, "count": len(data)}))
+    return cors(web.json_response({"ok": True, "data": data, "count": len(data)}), request)
 
 async def h_bitget(request):
-    if not check_token(request):
-        return cors(web.json_response({"ok": False, "error": "bad token"}, status=401))
+    denied = guard(request)
+    if denied is not None:
+        return denied
     if not (BITGET_KEY and BITGET_SECRET and BITGET_PASS):
-        return cors(web.json_response({"code": "NO_KEYS", "msg": "Cles Bitget non configurees"}, status=500))
+        return cors(web.json_response({"code": "NO_KEYS", "msg": "Cles Bitget non configurees"}, status=500),
+                    request)
     path = request.match_info.get("path", "")
     full = "/" + path
+    # Un chemin du genre "/api/v2/spot/market/tickers/../../trade/place-order"
+    # commence bien par un prefixe autorise, mais Bitget le resout ailleurs :
+    # la liste blanche ci-dessous serait contournee. On refuse toute traversee.
+    if ".." in full or "//" in full or not re.fullmatch(r"[A-Za-z0-9/_.\-]*", full):
+        log.warning("proxy bitget: chemin malforme refuse: %r (%s)", full, _client_ip(request))
+        return cors(web.json_response({"code": "BAD_PATH", "msg": "Chemin invalide"}, status=400), request)
+    # Le proxy signait N'IMPORTE QUEL chemin Bitget avec les cles du serveur :
+    # quiconque avait le jeton pouvait passer des ordres ou declencher un retrait.
+    # On restreint a la lecture. BITGET_ALLOW_WRITE=1 leve la restriction sciemment.
+    if not BITGET_ALLOW_WRITE:
+        if request.method != "GET" or not any(full.startswith(p) for p in BITGET_READ_PATHS):
+            log.warning("proxy bitget refuse: %s %s (%s)", request.method, full, _client_ip(request))
+            return cors(web.json_response(
+                {"code": "FORBIDDEN_PATH",
+                 "msg": "Proxy en lecture seule. Chemin non autorise : %s %s" % (request.method, full)},
+                status=403), request)
     if request.query_string:
         qs = "&".join(p for p in request.query_string.split("&") if not p.startswith("token="))
         if qs:
             full += "?" + qs
     body = ""
     if request.method == "POST":
-        body = await request.text()
+        raw = await request.content.read(65537)          # corps borne (cf. /momo)
+        if len(raw) > 65536:
+            return cors(web.json_response({"code": "BODY_TOO_LARGE", "msg": "Corps trop volumineux"},
+                                          status=413), request)
+        body = raw.decode("utf-8", "replace")
     session = request.app["session"]
     try:
         status, text = await bitget_request(session, request.method, full, body)
     except Exception as e:
-        return cors(web.json_response({"code": "PROXY_ERR", "msg": str(e)}, status=502))
+        log.warning("proxy bitget %s: %s", full.split("?")[0], e)
+        return cors(web.json_response({"code": "PROXY_ERR", "msg": str(e)}, status=502), request)
     resp = web.Response(text=text, status=status, content_type="application/json")
-    return cors(resp)
+    return cors(resp, request)
+
+LOGIN_PAGE = """<!doctype html><html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>NEXUS — Acces</title>
+<style>*{box-sizing:border-box}body{margin:0;min-height:100vh;display:flex;align-items:center;
+justify-content:center;background:#0B0B12;color:#E8E8F0;font-family:system-ui,-apple-system,Segoe UI,sans-serif}
+.c{width:100%;max-width:360px;padding:32px;background:#14141F;border:1px solid #24243A;border-radius:16px}
+h1{margin:0 0 6px;font-size:20px}p{margin:0 0 20px;color:#8A8AA8;font-size:13px;line-height:1.5}
+input{width:100%;padding:12px 14px;background:#0B0B12;border:1px solid #24243A;border-radius:10px;
+color:#E8E8F0;font-size:15px;margin-bottom:12px}input:focus{outline:none;border-color:#C9A227}
+button{width:100%;padding:12px;background:#C9A227;border:0;border-radius:10px;color:#0B0B12;
+font-size:15px;font-weight:700;cursor:pointer}.e{color:#F87171;font-size:13px;margin-bottom:12px}</style>
+</head><body><div class="c"><h1>🛰️ NEXUS</h1>
+<p>Tableau de bord prive. Entre le jeton d'acces, ou passe par le bouton
+<strong>Ouvrir l'app</strong> du panneau Discord.</p>
+__ERR__<form method="post" action="/"><input type="password" name="token" placeholder="Jeton d'acces"
+autofocus autocomplete="current-password"><button type="submit">Entrer</button></form></div></body></html>"""
+
+APP_HTML = os.path.join(os.path.dirname(os.path.abspath(__file__)), "PATRIMOINE_OS.html")
+_APP_CACHE = {"mtime": 0.0, "size": 0, "body": None}
+
+def _read_app_html():
+    """Lit PATRIMOINE_OS.html (≈350 Ko) en le gardant en memoire tant que le fichier
+    n'a pas change : sans cela, chaque rechargement de l'app relisait tout le disque
+    DANS la boucle asyncio (donc heartbeat Discord bloque pendant la lecture)."""
+    st = os.stat(APP_HTML)
+    c = _APP_CACHE
+    if c["body"] is None or c["mtime"] != st.st_mtime or c["size"] != st.st_size:
+        with open(APP_HTML, "rb") as f:
+            c["body"] = f.read()
+        c["mtime"], c["size"] = st.st_mtime, st.st_size
+        log.info("PATRIMOINE_OS.html relu (%d octets)", len(c["body"]))
+    return c["body"]
+
+def _login_page(err=""):
+    body = LOGIN_PAGE.replace("__ERR__", err).encode("utf-8")
+    resp = web.Response(body=body, content_type="text/html", charset="utf-8", status=401)
+    resp.headers["Cache-Control"] = "no-store"
+    resp.headers["Referrer-Policy"] = "no-referrer"
+    return resp
 
 async def h_app(request):
+    """Sert l'app. AVANT : la page etait publique ET contenait le AUTH_TOKEN en clair,
+    donc n'importe quel visiteur de PUBLIC_URL repartait avec la cle de toute l'API
+    (etat, proxy Bitget signe, ingestion MoMo). MAINTENANT : il faut presenter le jeton,
+    et il est depose dans un cookie HttpOnly pour que les visites suivantes passent
+    sans le remettre dans l'URL.
+
+    Le formulaire est en POST : en GET, le jeton finissait dans l'historique du
+    navigateur, dans le Referer et dans les logs d'acces. Le ?token= reste accepte
+    pour le bouton "Ouvrir l'app" du panneau Discord."""
+    if not rate_ok(request):
+        return web.Response(text="Trop de tentatives. Reessaie plus tard.", status=429,
+                            headers={"Retry-After": "60"})
+    presente = request.query.get("token") or ""
+    if request.method == "POST":
+        try:
+            form = await request.post()
+            presente = str(form.get("token") or "")
+        except Exception as e:
+            log.warning("h_app: formulaire illisible: %s", e)
+            presente = ""
+        if not (AUTH_TOKEN and not AUTH_WEAK and hmac.compare_digest(presente, AUTH_TOKEN)):
+            note_auth_fail(request)
+            return _login_page('<div class="e">Jeton invalide.</div>')
+        note_auth_ok(request)
+        # 303 + cookie : la page suivante est un GET propre, sans jeton nulle part.
+        resp = web.HTTPSeeOther("/")
+        _set_auth_cookie(resp)
+        return resp
+    if not check_token(request):
+        note_auth_fail(request)
+        if AUTH_WEAK:
+            log.error("acces refuse : AUTH_TOKEN absent ou trop faible — voir les logs de demarrage.")
+        return _login_page('<div class="e">Jeton invalide.</div>' if presente else "")
+    note_auth_ok(request)
     try:
-        p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "PATRIMOINE_OS.html")
-        with open(p, "rb") as f:
-            data = f.read()
-        # Le serveur sert SA propre app : il injecte TOUJOURS l'URL + le token,
-        # pour que ça marche sur tout appareil (PC, téléphone) sans saisir de token.
-        if AUTH_TOKEN:
-            boot = ("<script>try{localStorage.setItem('nexus_srv_url',location.origin);"
-                    "localStorage.setItem('nexus_srv_token',%s);"
-                    "if(location.search.indexOf('token=')>=0)history.replaceState(null,'',location.pathname);}catch(e){}</script>"
-                    % json.dumps(AUTH_TOKEN)).encode("utf-8")
-            data = data.replace(b"<head>", b"<head>" + boot, 1)
-        return web.Response(body=data, content_type="text/html", charset="utf-8")
+        data = _read_app_html()
+        # Le jeton n'est injecte dans la page qu'apres authentification.
+        boot = ("<script>try{localStorage.setItem('nexus_srv_url',location.origin);"
+                "localStorage.setItem('nexus_srv_token',%s);"
+                "if(location.search.indexOf('token=')>=0)history.replaceState(null,'',location.pathname);}catch(e){}</script>"
+                % json.dumps(AUTH_TOKEN)).encode("utf-8")
+        data = data.replace(b"<head>", b"<head>" + boot, 1)
+        resp = web.Response(body=data, content_type="text/html", charset="utf-8")
+        resp.headers["Cache-Control"] = "no-store"      # la page embarque le jeton
+        resp.headers["Referrer-Policy"] = "no-referrer"
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        _set_auth_cookie(resp)
+        return resp
+    except FileNotFoundError:
+        log.error("PATRIMOINE_OS.html introuvable a cote de nexus_server.py (%s)", APP_HTML)
+        return web.Response(text="App introuvable", status=404)
     except Exception as e:
-        return web.Response(text="App introuvable: %s" % e, status=404)
+        log.error("h_app: %s", e)
+        return web.Response(text="Erreur serveur", status=500)
+
+def _set_auth_cookie(resp):
+    """Cookie de session : evite de retrimballer ?token= dans l'URL (et donc dans
+    l'historique du navigateur, le referer et les logs Render)."""
+    resp.set_cookie(AUTH_COOKIE, AUTH_TOKEN, max_age=90 * 86400, httponly=True,
+                    samesite="Lax", secure=PUBLIC_URL.startswith("https://"), path="/")
+
+class SafeAccessLogger(AbstractAccessLogger):
+    """Journal d'acces qui ne recopie JAMAIS la chaine de requete (?token=...)."""
+    def log(self, request, response, duree):
+        try:
+            self.logger.info('%s "%s %s" %s %s %.0fms', _client_ip(request), request.method,
+                             request.path, response.status, response.body_length, duree * 1000)
+        except Exception:
+            pass   # un log ne doit jamais faire tomber une requete
 
 async def start_http():
     global HTTP_SESSION
@@ -816,12 +1324,13 @@ async def start_http():
     HTTP_SESSION = app["session"]
     try:
         await refresh_usd_xof(HTTP_SESSION)   # taux FCFA live des le demarrage
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("taux USD/XOF indisponible au demarrage, repli sur %s: %s", USD_XOF, e)
     app.router.add_route("OPTIONS", "/{tail:.*}", h_options)
     app.router.add_get("/ping", h_ping)
-    app.router.add_get("/health", h_ping)
+    app.router.add_get("/health", h_health)
     app.router.add_get("/", h_app)
+    app.router.add_post("/", h_app)          # formulaire de connexion (jeton hors URL)
     app.router.add_get("/app", h_app)
     app.router.add_get("/state", h_state)
     app.router.add_post("/state", h_state)
@@ -836,11 +1345,13 @@ async def start_http():
     async def _close_session(app):
         await app["session"].close()
     app.on_cleanup.append(_close_session)
-    runner = web.AppRunner(app)
+    # Journal d'acces SANS la chaine de requete : "GET /?token=xxxx" ecrivait le
+    # jeton en clair dans les logs Render, consultables bien apres coup.
+    runner = web.AppRunner(app, access_log_class=SafeAccessLogger)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
-    print("[http] API NEXUS sur le port %d" % PORT)
+    log.info("API NEXUS a l'ecoute sur le port %d", PORT)
     return app
 
 # ----------------------- Statistiques / nettoyage (sans dependance Discord) -----------------------
@@ -852,7 +1363,7 @@ def _momo_totals():
 
 def _wat_today():
     """Date du jour en heure du Bénin (UTC+1)."""
-    return (datetime.datetime.utcnow() + datetime.timedelta(hours=1)).date()
+    return today_wat()
 
 def _item_date(m):
     d = m.get("date")
@@ -863,33 +1374,67 @@ def _item_date(m):
             pass
     ts = (m.get("ts", 0) or 0) / 1000
     try:
-        return (datetime.datetime.utcfromtimestamp(ts) + datetime.timedelta(hours=1)).date()
+        return datetime.datetime.fromtimestamp(ts, WAT).date()
     except Exception:
         return _wat_today()
 
-def momo_totals_period(days, net=None):
-    """Fenetre glissante de N jours -> (entrees, sorties, net, nb). net='mtn'|'moov'|None(tous)."""
+def momo_totals_period(days, net=None, items=None):
+    """Fenetre glissante de N jours -> (entrees, sorties, net, nb). net='mtn'|'moov'|None(tous).
+    `items` permet de travailler sur une copie figee de la liste : le PDF est genere
+    dans un thread pendant que la boucle asyncio peut encore y ajouter des operations."""
     today = _wat_today()
     start = today - datetime.timedelta(days=int(days) - 1)
-    items = STATE.get("momo") or []
+    if items is None:
+        items = STATE.get("momo") or []
     sel = [m for m in items if _item_date(m) >= start and (net is None or m.get("net", "mtn") == net)]
     inc = sum(float(m.get("amount", 0) or 0) for m in sel if m.get("type") == "inc")
     exp = sum(float(m.get("amount", 0) or 0) for m in sel if m.get("type") == "exp")
     return inc, exp, inc - exp, len(sel)
 
+def _balance_entry(v):
+    """Un solde capture est soit un nombre (ancien format), soit {amount, ts}."""
+    if isinstance(v, dict):
+        return float(v.get("amount", 0) or 0), int(v.get("ts", 0) or 0)
+    try:
+        return float(v or 0), 0
+    except Exception:
+        return 0.0, 0
+
 def momo_balance_by_net():
-    """Solde par reseau : net des transactions si presentes, sinon solde capture."""
+    """Solde par reseau, en FCFA.
+
+    AVANT : des qu'une seule transaction existait pour un reseau, le solde capture
+    (la vraie photo du compte, lue sur une capture d'accueil) etait IGNORE et
+    remplace par la SOMME DES FLUX de la periode importee. Un flux n'est pas un
+    solde : le total consolide pouvait etre negatif ou tres loin du reel.
+
+    MAINTENANT : si un solde a ete capture, il fait foi ; on lui ajoute seulement
+    les operations posterieures a la capture. Sans capture, on retombe sur le net
+    des flux (approximation, signalee par momo_balance_sources())."""
     momo = STATE.get("momo") or []
-    nets = {}
-    for m in momo:
-        n = m.get("net", "mtn")
-        a = float(m.get("amount", 0) or 0)
-        nets[n] = nets.get(n, 0.0) + (a if m.get("type") == "inc" else -a)
-    bal = dict(STATE.get("balances") or {})
+    bal = STATE.get("balances") or {}
+    nets = set([m.get("net", "mtn") for m in momo]) | set(bal.keys())
     out = {}
-    for n in set(list(nets.keys()) + list(bal.keys())):
-        out[n] = nets[n] if n in nets else bal.get(n, 0.0)
+    for net in nets:
+        amount, ts0 = _balance_entry(bal.get(net))
+        has_capture = net in bal
+        total = amount if has_capture else 0.0
+        for m in momo:
+            if m.get("net", "mtn") != net:
+                continue
+            if has_capture and (m.get("ts", 0) or 0) <= ts0:
+                continue          # deja reflete dans le solde capture
+            a = float(m.get("amount", 0) or 0)
+            total += a if m.get("type") == "inc" else -a
+        out[net] = total
     return out
+
+def momo_balance_sources():
+    """Pour chaque reseau : 'capture' (solde reel lu) ou 'flux' (estime). Sert a
+    afficher honnetement quand un chiffre est une approximation."""
+    bal = STATE.get("balances") or {}
+    nets = set([m.get("net", "mtn") for m in (STATE.get("momo") or [])]) | set(bal.keys())
+    return {net: ("capture" if net in bal else "flux") for net in nets}
 
 async def refresh_usd_xof(session):
     """Recupere le taux USD->FCFA en direct (meme source que l'app) et le met en cache.
@@ -908,7 +1453,7 @@ async def refresh_usd_xof(session):
                     _USD_XOF_TS = int(time.time())
                     return _USD_XOF_LIVE
         except Exception as e:
-            sys.stderr.write("[fx] %s: %s\n" % (url, e))
+            log.warning("taux USD/XOF (%s): %s", url, e)
     return _USD_XOF_LIVE
 
 def get_usd_xof():
@@ -934,7 +1479,7 @@ def record_snapshot():
     """Enregistre (ou met a jour) le point du JOUR dans STATE["history"].
     1 point par jour : {d, total, momo, nsia, bg (en FCFA)}. Retourne (point, veille)."""
     c = consolidated_total()
-    today = (datetime.datetime.utcnow() + datetime.timedelta(hours=1)).date().isoformat()
+    today = today_wat().isoformat()
     hist = STATE.setdefault("history", [])
     point = {"d": today, "total": int(round(c["total"])), "momo": int(round(c["momo"])),
              "nsia": int(round(c["nsia"])), "bg": int(round(c["bitget_xof"]))}
@@ -962,7 +1507,7 @@ async def refresh_bitget_state(session):
     """Recalcule Bitget en direct (live + staking calé) et met STATE["bitget"] a jour.
     A appeler AVANT consolidated_total() pour que le total consolide ne soit jamais perime."""
     try:
-        ov = await bitget_overview(session)
+        ov = await bitget_overview(session, force=True)
         if ov:
             STATE["bitget"] = {"total": ov["total"], "spot": ov["spot"], "earn": ov["earn"],
                                "others": ov["others"], "ts": int(time.time() * 1000),
@@ -970,7 +1515,7 @@ async def refresh_bitget_state(session):
             save_state()
         return ov
     except Exception as e:
-        sys.stderr.write("[bitget] refresh_state: %s\n" % e)
+        log.warning("rafraichissement Bitget: %s", e)
         return None
 
 def business_field():
@@ -1016,7 +1561,12 @@ def _ascii(s):
     return (str(s or "")).encode("latin-1", "replace").decode("latin-1")
 
 def build_pdf_report(days=30):
-    """Genere un rapport patrimoine PDF stylise avec graphiques (octets)."""
+    """Genere un rapport patrimoine PDF stylise avec graphiques (octets).
+
+    SYNCHRONE ET LENT (fpdf trace tout en Python) : ne JAMAIS l'appeler directement
+    depuis un handler async — passer par build_pdf_report_async(), qui l'execute dans
+    un thread. Appele dans la boucle, il figeait tout le bot (heartbeat Discord
+    compris) le temps de la generation, a chaque clic sur un bouton PDF."""
     from fpdf import FPDF
     GOLD, GREEN, RED = (201, 162, 39), (22, 163, 74), (220, 38, 38)
     PURPLE, AMBER, DARK, GREY, LIGHT = (124, 58, 237), (245, 158, 11), (24, 24, 34), (120, 120, 140), (244, 244, 248)
@@ -1026,8 +1576,13 @@ def build_pdf_report(days=30):
     W, M = 210, 12
     CW = W - 2 * M
     c = consolidated_total()
-    inc, exp, net, cnt = momo_totals_period(days)
-    mtn, moov = momo_totals_period(days, "mtn"), momo_totals_period(days, "moov")
+    # Copie figee : la generation tourne dans un thread, la boucle asyncio peut
+    # ajouter des operations pendant ce temps (une liste modifiee en cours
+    # d'iteration leve RuntimeError et fait echouer le rapport).
+    snap = list(STATE.get("momo") or [])
+    inc, exp, net, cnt = momo_totals_period(days, items=snap)
+    mtn = momo_totals_period(days, "mtn", items=snap)
+    moov = momo_totals_period(days, "moov", items=snap)
 
     def txt(x, y, s, size=9, style="", color=DARK):
         pdf.set_xy(x, y); pdf.set_font("Helvetica", style, size); pdf.set_text_color(*color)
@@ -1101,8 +1656,8 @@ def build_pdf_report(days=30):
         for h in (bg.get("holdings") or [])[:10]:
             if h.get("val", 0) > 0.01:
                 pdf.set_x(M); pdf.cell(0, 4.5, _ascii("  %s : %s" % (h.get("coin", ""), fmt_usd(h.get("val", 0)))), ln=1)
-    # ---- Dernieres operations ----
-    momo = STATE.get("momo") or []
+    # ---- Dernieres operations ---- (sur la copie figee, cf. plus haut)
+    momo = snap
     if momo:
         pdf.ln(2); pdf.set_x(M); pdf.set_font("Helvetica", "B", 12); pdf.set_text_color(*DARK)
         pdf.cell(0, 7, "Dernieres operations Mobile Money", ln=1)
@@ -1113,6 +1668,19 @@ def build_pdf_report(days=30):
             pdf.cell(0, 4.3, _ascii("%s %s  [%s]  %s" % ("+" if inc_ else "-", fmt_xof(mop.get("amount", 0)),
                 (mop.get("net", "mtn") or "").upper(), (mop.get("payee") or mop.get("text") or "")[:55])), ln=1)
     return bytes(pdf.output())
+
+# Un seul PDF a la fois : trois clics d'affilee lancaient trois generations en
+# parallele sur une instance a 512 Mo, chacune avec sa copie de l'etat.
+_pdf_lock = asyncio.Semaphore(1)
+
+async def build_pdf_report_async(days=30):
+    """Genere le PDF HORS de la boucle asyncio (asyncio.to_thread).
+    C'est le seul point d'entree a utiliser depuis un bouton ou une commande."""
+    async with _pdf_lock:
+        t0 = time.time()
+        data = await asyncio.to_thread(build_pdf_report, days)
+        log.info("PDF %d j genere en %.1fs (%d Ko)", days, time.time() - t0, len(data) // 1024)
+        return data
 
 def clean_duplicates():
     momo = STATE.get("momo") or []
@@ -1152,7 +1720,7 @@ if discord is not None:
             ov = await bitget_overview(HTTP_SESSION)
         except Exception as ex:
             ov = None
-            sys.stderr.write("[report] bitget: %s\n" % ex)
+            log.warning("rapport: bitget indisponible: %s", ex)
         if ov is not None:
             top = "\n".join("• %s : %s" % (c, fmt_usd(v)) for c, a, v in ov["holdings"][:4] if v > 0.01)
             e.add_field(name="📈 Bitget (tous comptes)",
@@ -1377,7 +1945,7 @@ if discord is not None:
         await client.wait_until_ready()
         while not client.is_closed():
             try:
-                now = datetime.datetime.utcnow() + datetime.timedelta(hours=1)
+                now = now_wat()
                 if now.hour >= 20:
                     keys = STATE.setdefault("recap_keys", {})
                     today = now.date()
@@ -1394,7 +1962,7 @@ if discord is not None:
                             keys[k] = today.isoformat()
                             save_state()
             except Exception as e:
-                sys.stderr.write("[recap] %s\n" % e)
+                log.error("recap_scheduler: %s", e)
             await asyncio.sleep(3600)  # vérifie toutes les heures
 
     async def history_scheduler(client):
@@ -1455,7 +2023,7 @@ if discord is not None:
             if file is not None: kw["file"] = file
             return await ch.send(**kw)
         except Exception as e:
-            sys.stderr.write("[report] envoi: %s\n" % e)
+            log.error("envoi dans le salon de rapports impossible: %s", e)
             return None
 
     async def purge_channels(client):
@@ -1519,9 +2087,9 @@ if discord is not None:
                         if s:
                             summaries.append(s)
                     except Exception as ex:
-                        sys.stderr.write("[rescan] %s\n" % ex)
+                        log.warning("rescan piece jointe: %s", ex)
         except Exception as e:
-            sys.stderr.write("[rescan] salon: %s\n" % e)
+            log.error("rescan du salon d'import: %s", e)
         return n_msg, summaries
 
     class ConfirmResetView(discord.ui.View):
@@ -1570,8 +2138,7 @@ if discord is not None:
         """Embed d'évolution du patrimoine sur d jours (graphe + postes + projection).
         Retourne None s'il n'y a pas encore assez de points quotidiens."""
         hist = STATE.get("history") or []
-        cutoff = ((datetime.datetime.utcnow() + datetime.timedelta(hours=1)).date()
-                  - datetime.timedelta(days=d)).isoformat()
+        cutoff = (today_wat() - datetime.timedelta(days=d)).isoformat()
         pts = [p for p in hist if p.get("d", "") >= cutoff]
         if len(pts) < 2:
             return None
@@ -1755,7 +2322,7 @@ if discord is not None:
             await interaction.response.defer(ephemeral=True, thinking=True)
             try:
                 await refresh_bitget_state(HTTP_SESSION)
-                data = build_pdf_report(30)
+                data = await build_pdf_report_async(30)
                 f = discord.File(io.BytesIO(data), filename="rapport_nexus_30j.pdf")
                 await post_report(interaction.client, content="📄 **Rapport patrimoine détaillé (30 jours)**",
                                   file=f, view=ReportActionView())
@@ -1840,7 +2407,7 @@ if discord is not None:
             await interaction.response.defer(ephemeral=True, thinking=True)
             try:
                 await refresh_bitget_state(HTTP_SESSION)
-                data = build_pdf_report(7)
+                data = await build_pdf_report_async(7)
                 f = discord.File(io.BytesIO(data), filename="rapport_nexus_7j.pdf")
                 await post_report(interaction.client, content="🗒️ **Rapport patrimoine (7 jours)**",
                                   file=f, view=ReportActionView())
@@ -1868,7 +2435,7 @@ if discord is not None:
         try:
             ch = client.get_channel(int(PANEL_CHANNEL)) or await client.fetch_channel(int(PANEL_CHANNEL))
         except Exception as e:
-            sys.stderr.write("[panel] salon introuvable: %s\n" % e)
+            log.error("panneau: salon introuvable: %s", e)
             return
         emb = discord.Embed(
             title="🛰️ NEXUS — Panneau de contrôle",
@@ -1909,7 +2476,7 @@ if discord is not None:
             "`/solde` `/bitget` `/momo` `/nsia`\n"
             "`/rapport` `/recap [jours]` `/historique [jours]` `/pdf [jours]`\n"
             "`/analyse` `/sync` `/etat` `/panel` `/aide`"), inline=False)
-        now = datetime.datetime.utcnow() + datetime.timedelta(hours=1)
+        now = now_wat()
         emb.set_footer(text="NEXUS • alertes auto ±%.0f%% • MAJ %s" % (ALERT_PCT, now.strftime("%d/%m %H:%M")))
         view = PanelView()
         msg_id = STATE.get("panel_msg")
@@ -1924,13 +2491,21 @@ if discord is not None:
             msg = await ch.send(embed=emb, view=view)
             STATE["panel_msg"] = msg.id
             save_state()
-            print("[panel] panneau publié dans le salon %s" % PANEL_CHANNEL)
+            log.info("panneau publie dans le salon %s", PANEL_CHANNEL)
         except Exception as ex:
-            sys.stderr.write("[panel] envoi impossible: %s\n" % ex)
+            log.error("panneau: envoi impossible: %s", ex)
+
+    MAX_ATTACH = int(_conf("MAX_ATTACH_MB") or "12") * 1024 * 1024
 
     async def process_attachment(message, att):
         """Traite une piece jointe (PDF/image) -> texte de resume, et ajoute les reactions."""
         name = (att.filename or "").lower()
+        # Un PDF de 200 Mo etait lu entierement en memoire puis passe a pdfplumber :
+        # de quoi faire tomber l'instance Render (512 Mo) avec un seul fichier.
+        if (att.size or 0) > MAX_ATTACH:
+            await message.add_reaction("⚠️")
+            return "⚠️ **%s** ignoré : %.1f Mo, au-dessus de la limite de %d Mo." % (
+                att.filename, (att.size or 0) / 1048576.0, MAX_ATTACH // 1048576)
         data = await att.read()
         if name.endswith(".pdf"):
             obj, text = parse_pdf_bytes(data)
@@ -1974,7 +2549,9 @@ if discord is not None:
             bal = detect_balance(text)
             if bal:
                 net, val = bal
-                STATE.setdefault("balances", {})[net] = val
+                # Horodate : momo_balance_by_net() n'ajoute que les operations
+                # posterieures a cette photo du compte.
+                STATE.setdefault("balances", {})[net] = {"amount": val, "ts": int(time.time() * 1000)}
                 save_state()
                 await message.add_reaction("💰")
                 return "💰 Solde **%s** détecté : **%s** (compte mis à jour)." % (("Moov" if net == "moov" else "MTN"), fmt_xof(val))
@@ -2095,7 +2672,7 @@ async def run_discord(http_session):
         try:
             d = max(1, min(int(jours), 365))
             await refresh_bitget_state(HTTP_SESSION)
-            data = build_pdf_report(d)
+            data = await build_pdf_report_async(d)
             f = discord.File(io.BytesIO(data), filename="rapport_nexus_%dj.pdf" % d)
             await interaction.followup.send(content="📄 **Rapport patrimoine (%d jours)**" % d, file=f, ephemeral=True)
         except Exception as ex:
@@ -2135,7 +2712,7 @@ async def run_discord(http_session):
             client.add_view(PanelView())  # rend les boutons persistants apres redemarrage
             client.add_view(ReportActionView())  # boutons ✅/❌ des rapports persistants
         except Exception as e:
-            sys.stderr.write("[discord] add_view: %s\n" % e)
+            log.error("discord add_view (boutons non persistants !): %s", e)
         # Synchronise les slash-commands (rapide si on cible la guilde)
         try:
             g = None
@@ -2154,7 +2731,7 @@ async def run_discord(http_session):
             else:
                 await tree.sync()
         except Exception as e:
-            sys.stderr.write("[discord] sync commands: %s\n" % e)
+            log.error("discord: synchronisation des slash-commands: %s", e)
         await post_or_update_panel(client)
         # Démarre le planificateur de récaps auto (une seule fois, même après reconnexion)
         if not getattr(client, "_recap_started", False):
@@ -2179,7 +2756,7 @@ async def run_discord(http_session):
                         summaries.append(s)
                 except Exception as ex:
                     summaries.append("⚠️ Erreur sur %s : %s" % (att.filename, ex))
-                    sys.stderr.write("[discord] attach err: %s\n" % ex)
+                    log.error("discord: piece jointe %s: %s", att.filename, ex)
             if message.content and re.search(r"fcfa|xof|cfa", message.content, re.I):
                 n = add_momo(parse_momo_text(message.content))
                 if n:
@@ -2204,7 +2781,7 @@ async def run_discord(http_session):
                 except Exception:
                     pass
         except Exception as e:
-            sys.stderr.write("[discord] on_message err: %s\n" % e)
+            log.error("discord on_message: %s", e)
 
     # Laisse remonter les erreurs a main() qui gere la strategie de reconnexion.
     try:
@@ -2227,12 +2804,16 @@ async def main():
     print(" - Discord import   :", DISCORD_CHANNEL or "non configure")
     print(" - Discord panneau  :", PANEL_CHANNEL or "non configure")
     print(" - OCR (ocr.space)  :", "OK" if OCR_API_KEY else "non configure")
-    print(" - App auto-config  : http://TON_IP:%d/?token=%s" % (PORT, AUTH_TOKEN))
-    print(" - MacroDroid (SMS) : http://TON_IP:%d/momo?token=%s&text={sms}" % (PORT, AUTH_TOKEN))
+    print(" - Proxy Bitget     :", "LECTURE+ECRITURE (!)" if BITGET_ALLOW_WRITE else "lecture seule")
+    print(" - Historique MoMo  :", MOMO_MAX, "operations max")
     print("=" * 58)
-    if AUTH_TOKEN == "nexus229":
-        log.warning("SECURITE: AUTH_TOKEN utilise la valeur par defaut faible 'nexus229'. "
-                    "Definis un jeton long et aleatoire via la variable d'env AUTH_TOKEN.")
+    # Le jeton ne s'imprime plus : les logs Render sont consultables et ces deux
+    # lignes suffisaient a le divulguer. On y accede par le bouton "Ouvrir l'app".
+    if AUTH_WEAK:
+        log.critical("SECURITE — AUTH_TOKEN absent, trop court, ou laisse a 'nexus229' "
+                     "(valeur publique, presente dans le depot). L'API refuse toutes les "
+                     "requetes tant qu'un jeton d'au moins 16 caracteres n'est pas defini. "
+                     "Genere-le avec : %s", GEN_CMD)
     if not (BITGET_KEY and BITGET_SECRET and BITGET_PASS):
         log.info("Bitget non configure — le proxy /bitget renverra une erreur tant que les cles ne sont pas definies.")
     app = await start_http()
@@ -2261,8 +2842,26 @@ async def main():
     # garde le process vivant meme si Discord est desactive
     await asyncio.Event().wait()
 
+def _install_shutdown():
+    """Render envoie SIGTERM a chaque deploiement et avant la mise en veille.
+    Sans ce hook, la derniere sauvegarde en attente etait perdue."""
+    def _bye(signum, frame):
+        log.info("signal %s recu — sauvegarde de l'etat", signum)
+        try:
+            flush_state()
+        finally:
+            sys.exit(0)
+    for name in ("SIGTERM", "SIGINT"):
+        try:
+            signal.signal(getattr(signal, name), _bye)
+        except Exception:
+            pass
+
 if __name__ == "__main__":
+    _install_shutdown()
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\nArret.")
+        print("Arret.")
+    finally:
+        flush_state()
