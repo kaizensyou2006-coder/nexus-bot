@@ -136,6 +136,18 @@ class TestSoldes(unittest.TestCase):
         N.STATE["balances"] = {"moov": 250000}   # nombre nu : etats sauvegardes avant le correctif
         self.assertEqual(N.momo_balance_by_net()["moov"], 250000)
 
+    def test_ancien_format_avec_operations_ne_gonfle_pas_le_total(self):
+        """Regression constatee en production : un solde d'avant l'horodatage est un
+        simple nombre (ts=0). On en deduisait qu'aucune operation n'y figurait encore
+        et on les rajoutait TOUTES par-dessus -> alerte patrimoine a +11725 %.
+        Sans horodatage, la photo du compte vaut seule."""
+        N.STATE["balances"] = {"mtn": 340500}
+        N.STATE["momo"] = ([{"net": "mtn", "type": "exp", "amount": 5000, "ts": 1000 + i}
+                            for i in range(50)]
+                           + [{"net": "mtn", "type": "inc", "amount": 200000, "ts": 5000 + i}
+                              for i in range(30)])
+        self.assertEqual(N.momo_balance_by_net()["mtn"], 340500)
+
     def test_consolidation(self):
         N.STATE["balances"] = {"mtn": {"amount": 100000, "ts": 0}}
         N.STATE["nsia"] = {"total": 218248}

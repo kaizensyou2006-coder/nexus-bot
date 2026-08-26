@@ -1418,6 +1418,13 @@ def momo_balance_by_net():
     for net in nets:
         amount, ts0 = _balance_entry(bal.get(net))
         has_capture = net in bal
+        # Un solde enregistre AVANT l'ajout de l'horodatage est un simple nombre :
+        # ts0 vaut alors 0, et on ne sait pas quelles operations il reflete deja.
+        # Les ajouter toutes gonflait le patrimoine (constate en production : une
+        # alerte a +11725 %). Sans horodatage, la photo du compte vaut seule.
+        if has_capture and ts0 <= 0:
+            out[net] = amount
+            continue
         total = amount if has_capture else 0.0
         for m in momo:
             if m.get("net", "mtn") != net:
