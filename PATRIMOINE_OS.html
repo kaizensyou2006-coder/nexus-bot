@@ -129,6 +129,65 @@ body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;bac
 .ch-h3{height:180px;}
 .ch-h4{height:150px;}
 .ch-h5{height:120px;}
+/* ══════════ ANALYSE APPROFONDIE — dataviz ══════════ */
+:root{
+  /* Palette catégorielle validée (OKLCH L 0.48–0.67, ΔE CVD ≥ 8 sur fond #0F0F1B).
+     Ordre FIXE : un slot = une entité, jamais recyclé par rang. */
+  --dv1:#AC9008;--dv2:#0168B4;--dv3:#D06091;--dv4:#057743;
+  --dv5:#9871D5;--dv6:#AF4803;--dv7:#02A6AD;--dv0:#4A4A63;
+  --dv-in:#057743;--dv-out:#D06091;      /* entrées / sorties */
+  --dv-grid:rgba(255,255,255,.045);--dv-axis:#5A5A7A;
+}
+.an-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin:30px 0 16px;padding-top:24px;border-top:1px solid var(--border)}
+.an-title{font-family:var(--fn);font-size:19px;font-weight:800;color:var(--gl);letter-spacing:.2px}
+.an-title::before{content:'';display:inline-block;width:4px;height:17px;border-radius:2px;background:var(--g);margin-right:9px;vertical-align:-2px}
+.an-sub{font-size:11.5px;color:var(--t2);margin-top:4px;max-width:56ch;line-height:1.5}
+.an-seg{display:flex;gap:2px;background:var(--s2);border:1px solid var(--border);border-radius:var(--r8);padding:3px}
+.an-seg button{background:none;border:0;color:var(--t2);font-family:var(--fm);font-size:10.5px;padding:5px 11px;border-radius:6px;cursor:pointer;transition:var(--tr)}
+.an-seg button:hover{color:var(--t0)}
+.an-seg button.on{background:var(--gs);color:var(--gl);font-weight:700}
+/* Tuiles chiffrées : un nombre qui se lit sans graphe */
+.an-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(178px,1fr));gap:14px;margin-bottom:18px}
+.an-tile{background:var(--card);border:1px solid var(--border);border-radius:var(--r12);padding:15px 16px;position:relative;overflow:hidden}
+.an-tile::after{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--tc,var(--g));opacity:.85}
+.an-tl{font-size:9px;letter-spacing:1.6px;text-transform:uppercase;color:var(--t2);font-family:var(--fm)}
+.an-tv{font-family:var(--fn);font-size:23px;font-weight:800;color:var(--t0);margin:7px 0 3px;line-height:1.1;letter-spacing:-.5px}
+.an-th{font-size:10.5px;color:var(--t1);line-height:1.45}
+.an-spark{height:30px;margin-top:9px;position:relative}
+.ch-note{font-family:var(--fb);font-size:11px;font-weight:400;color:var(--t2);letter-spacing:0;margin-left:8px}
+/* Légende : l'identité n'est jamais portée par la couleur seule */
+.lg{display:flex;flex-wrap:wrap;gap:7px 15px;margin-top:11px}
+.lg-i{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--t1)}
+.lg-s{width:10px;height:10px;border-radius:3px;flex:0 0 auto}
+.lg-v{font-family:var(--fm);color:var(--t0);font-size:11px}
+/* Heatmap : rampe séquentielle, une seule teinte, sombre → clair */
+.hm{display:grid;grid-auto-flow:column;grid-template-rows:repeat(7,1fr);gap:3px;overflow-x:auto;padding-bottom:4px}
+.hm-c{width:13px;height:13px;border-radius:3px;background:var(--s3);cursor:default;transition:transform .1s ease}
+.hm-c:hover{transform:scale(1.35);outline:1.5px solid var(--b2)}
+.hm-l0{background:#16162a}.hm-l1{background:#3B3212}.hm-l2{background:#6B5A10}
+.hm-l3{background:#9A820A}.hm-l4{background:#C9A227}
+.hm-days{display:grid;grid-template-rows:repeat(7,1fr);gap:3px;margin-right:7px;font-size:8.5px;color:var(--t2);font-family:var(--fm)}
+.hm-days span{height:13px;line-height:13px}
+.hm-scale{display:flex;align-items:center;gap:5px;font-size:10px;color:var(--t2);font-family:var(--fm);margin-top:10px}
+.hm-scale i{width:11px;height:11px;border-radius:3px;display:inline-block}
+/* Barres horizontales : magnitude sur une seule teinte, identité portée par le texte */
+.hb{display:flex;align-items:center;gap:11px;padding:7px 0}
+.hb-n{width:34%;font-size:11.5px;color:var(--t0);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:0 0 auto}
+.hb-t{flex:1;height:9px;background:rgba(255,255,255,.04);border-radius:5px;overflow:hidden}
+.hb-f{height:100%;border-radius:5px;background:var(--g);transition:width .5s cubic-bezier(.4,0,.2,1)}
+.hb-v{font-family:var(--fm);font-size:11px;color:var(--t0);flex:0 0 auto;text-align:right;min-width:84px}
+.hb-d{font-family:var(--fm);font-size:10px;flex:0 0 auto;min-width:52px;text-align:right}
+.hb-d.up{color:#D06091}.hb-d.dn{color:#22C55E}.hb-d.ne{color:var(--t2)}
+/* Table de repli : toute série est lisible sans couleur */
+.an-tbl{width:100%;border-collapse:collapse;font-size:11.5px;margin-top:10px}
+.an-tbl th{text-align:left;font-family:var(--fm);font-size:9px;letter-spacing:1.2px;text-transform:uppercase;color:var(--t2);padding:6px 8px;border-bottom:1px solid var(--border)}
+.an-tbl td{padding:6px 8px;border-bottom:1px solid var(--b0);color:var(--t1)}
+.an-tbl td:not(:first-child){font-family:var(--fm);text-align:right;color:var(--t0)}
+.an-tgl{background:none;border:1px solid var(--border);color:var(--t2);font-family:var(--fm);font-size:9.5px;padding:3px 9px;border-radius:5px;cursor:pointer;transition:var(--tr)}
+.an-tgl:hover{color:var(--t0);border-color:var(--b2)}
+.an-empty{color:var(--t2);font-size:11.5px;text-align:center;padding:26px 12px;line-height:1.6}
+@media(max-width:900px){.an-tiles{grid-template-columns:repeat(auto-fit,minmax(148px,1fr))}.hb-n{width:42%}.hb-d{display:none}}
+
 /* Limiter la hauteur des listes scrollables */
 .tx-list.limited{max-height:320px;overflow-y:auto;}
 .dca-row{background:var(--s3);border:1px solid var(--b0);border-radius:var(--r12);padding:10px 13px;margin-bottom:6px;transition:all var(--tr);}
@@ -491,6 +550,95 @@ textarea.cinp::placeholder{color:var(--t3);}
     <div class="card" style="flex:1"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px"><div class="ch" style="margin:0">Prochains DCA</div><button class="btn btn-ghost btn-sm" onclick="go('dca')">Gérer</button></div><div id="d-dca" style="max-height:220px;overflow-y:auto"></div></div>
     <div class="card" style="flex:1"><div class="ch">Transactions récentes</div><div class="tx-list" id="d-txs" style="max-height:220px;overflow-y:auto"></div></div>
     <div class="card" style="flex:1.3"><div class="ch">Positions actuelles</div><div id="d-positions" style="max-height:220px;overflow-y:auto"></div></div>
+  </div>
+
+  <!-- ════════════ ANALYSE APPROFONDIE ════════════ -->
+  <div class="an-head">
+    <div>
+      <div class="an-title">Analyse approfondie</div>
+      <div class="an-sub">D'où vient la variation de ton patrimoine, où part réellement l'argent, et ce que ça donne si rien ne change.</div>
+    </div>
+    <div class="an-seg" role="group" aria-label="Période d'analyse">
+      <button id="anp-3" onclick="anSetPeriod(3)">3 mois</button>
+      <button id="anp-6" class="on" onclick="anSetPeriod(6)">6 mois</button>
+      <button id="anp-12" onclick="anSetPeriod(12)">12 mois</button>
+    </div>
+  </div>
+
+  <div class="an-tiles" id="an-tiles"></div>
+
+  <!-- Décomposition + santé -->
+  <div class="row-flex" style="margin-bottom:18px;align-items:flex-start">
+    <div class="card card-glow" style="flex:1.6;min-width:0">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px">
+        <div class="ch" style="margin-bottom:6px">Décomposition de la variation<span class="ch-note">ce qui a fait bouger le patrimoine ce mois-ci</span></div>
+        <button class="an-tgl" onclick="anToggleTable('water')">Données</button>
+      </div>
+      <div class="chart-wrap ch-h1"><canvas id="c-an-water"></canvas></div>
+      <div class="lg" id="lg-an-water"></div>
+      <div id="tbl-an-water" style="display:none"></div>
+    </div>
+    <div class="card" style="flex:1;min-width:0">
+      <div class="ch" style="margin-bottom:6px">Santé financière<span class="ch-note">5 axes, 0 à 100</span></div>
+      <div class="chart-wrap ch-h1"><canvas id="c-an-radar"></canvas></div>
+      <div id="an-radar-leg"></div>
+    </div>
+  </div>
+
+  <!-- Cumul YTD + drawdown -->
+  <div class="row-flex" style="margin-bottom:18px;align-items:flex-start">
+    <div class="card" style="flex:1;min-width:0">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px">
+        <div class="ch" style="margin-bottom:6px">Revenus et dépenses cumulés<span class="ch-note">depuis le 1<sup>er</sup> janvier</span></div>
+        <button class="an-tgl" onclick="anToggleTable('ytd')">Données</button>
+      </div>
+      <div class="chart-wrap ch-h1"><canvas id="c-an-ytd"></canvas></div>
+      <div class="lg" id="lg-an-ytd"></div>
+      <div id="tbl-an-ytd" style="display:none"></div>
+    </div>
+    <div class="card" style="flex:1;min-width:0">
+      <div class="ch" style="margin-bottom:6px">Repli depuis le plus haut<span class="ch-note">écart entre le pic du capital et aujourd'hui</span></div>
+      <div class="chart-wrap ch-h1"><canvas id="c-an-dd"></canvas></div>
+      <div class="lg" id="lg-an-dd"></div>
+    </div>
+  </div>
+
+  <!-- Heatmap + top catégories -->
+  <div class="row-flex" style="margin-bottom:18px;align-items:flex-start">
+    <div class="card" style="flex:1.15;min-width:0">
+      <div class="ch" style="margin-bottom:6px">Intensité des dépenses<span class="ch-note">une case = un jour</span></div>
+      <div style="display:flex;align-items:flex-start;overflow-x:auto">
+        <div class="hm-days"><span>L</span><span></span><span>M</span><span></span><span>V</span><span></span><span>D</span></div>
+        <div class="hm" id="an-heat"></div>
+      </div>
+      <div class="hm-scale" id="an-heat-scale"></div>
+    </div>
+    <div class="card" style="flex:1.35;min-width:0">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px">
+        <div class="ch" style="margin-bottom:6px">Où part l'argent<span class="ch-note">top catégories · écart mesuré à date égale sur le mois précédent</span></div>
+        <button class="an-tgl" onclick="anToggleTable('cat')">Données</button>
+      </div>
+      <div id="an-cats"></div>
+      <div id="tbl-an-cat" style="display:none"></div>
+    </div>
+  </div>
+
+  <!-- Structure du patrimoine + saisonnalité -->
+  <div class="row-flex" style="margin-bottom:6px;align-items:flex-start">
+    <div class="card" style="flex:1;min-width:0">
+      <div class="ch" style="margin-bottom:6px">Structure du patrimoine<span class="ch-note">part de chaque poche</span></div>
+      <div class="chart-wrap ch-h4"><canvas id="c-an-struct"></canvas></div>
+      <div class="lg" id="lg-an-struct"></div>
+    </div>
+    <div class="card" style="flex:1;min-width:0">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px">
+        <div class="ch" style="margin-bottom:6px">Solde mensuel<span class="ch-note">revenus moins dépenses, mois par mois</span></div>
+        <button class="an-tgl" onclick="anToggleTable('bal')">Données</button>
+      </div>
+      <div class="chart-wrap ch-h4"><canvas id="c-an-bal"></canvas></div>
+      <div class="lg" id="lg-an-bal"></div>
+      <div id="tbl-an-bal" style="display:none"></div>
+    </div>
   </div>
 </div>
 
@@ -1508,6 +1656,7 @@ function renderDash(){
   document.getElementById('d-txs').innerHTML=[...FIN.data.transactions].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,6).map(t=>{const cat=getCat(t.catId);return`<div class="txi" onclick="go('transactions')"><div class="tx-ic" style="background:${cat.col}18">${cat.ic}</div><div class="tx-info"><div class="tx-n">${esc(t.payee||cat.n)}</div><div class="tx-m">${fmtDate(t.date,true)}</div></div><div class="tx-a ${t.type}">${t.type==='inc'?'+':'-'}${fmtAmt(t.amount,t.cur||cur())}</div></div>`;}).join('')||'<div style="text-align:center;padding:20px;color:var(--t2);font-size:12px">Aucune transaction</div>';
   document.getElementById('d-positions').innerHTML=hs.map(([sym,h])=>{const p=getPrice(sym),val=h.qty*p,pnlP=val-h.invested,pctP=h.invested>0?(pnlP/h.invested)*100:0;return`<div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,.03)"><div style="width:34px;height:34px;border-radius:9px;background:${TARGET[sym]?.col||'#666'}18;color:${TARGET[sym]?.col||'#888'};display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0">${TARGET[sym]?.ic||sym[0]}</div><div style="flex:1"><div style="font-weight:700;font-size:13px">${sym}</div><div style="font-size:11px;color:var(--t2);font-family:var(--fm)">${h.qty.toFixed(4)}</div></div><div style="text-align:right"><div style="font-family:var(--fm);font-size:14px;font-weight:500">${fm(val)}</div><div style="font-size:11px;font-family:var(--fm);color:${pnlP>=0?'var(--ok)':'var(--err)'}">${pnlP>=0?'+':''}${fm(pnlP)} (${pctP.toFixed(1)}%)</div></div></div>`;}).join('')||'<div style="text-align:center;padding:20px;color:var(--t2);font-size:12px">Aucune position · <button class="btn btn-gold btn-sm" onclick="openBuyModal()">+ Investir</button></div>';
   renderPatriChart();
+  renderAnalytics();
 }
 function renderPatriChart(){
   const cc=cur();const segs=[];
@@ -1520,6 +1669,328 @@ function renderPatriChart(){
   mkChart('c-patri',{type:'doughnut',data:{labels:segs.map(s=>s.label),datasets:[{data:segs.map(s=>s.val),backgroundColor:segs.map(s=>s.col),borderWidth:0,hoverOffset:6}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:x=>`${x.label}: ${fmtM(x.raw)} (${(x.raw/tot*100).toFixed(0)}%)`}}},cutout:'68%'}});
   if(leg)leg.innerHTML=segs.slice(0,7).map(s=>`<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:11.5px"><span style="color:${s.col};font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60%">● ${esc(s.label)}</span><span style="font-family:var(--fm);color:var(--t1);flex-shrink:0">${fmtM(s.val)} · ${(s.val/tot*100).toFixed(0)}%</span></div>`).join('');
 }
+// ══════════════════ ANALYSE APPROFONDIE ══════════════════
+// Palette catégorielle validée (OKLCH L 0.48-0.67 sur fond #0F0F1B, ΔE CVD >= 8).
+// Ordre FIXE : un slot = une entité. Jamais recyclé selon le rang, jamais généré
+// au-delà de 7 — le 8e et les suivants tombent dans « Autres ».
+const DV=['#AC9008','#0168B4','#D06091','#057743','#9871D5','#AF4803','#02A6AD'];
+const DV_OTHER='#4A4A63', DV_IN='#057743', DV_OUT='#D06091', DV_SURF='#0F0F1B';
+let AN_PERIOD=6, AN_TBL={};
+
+function anSetPeriod(n){AN_PERIOD=n;[3,6,12].forEach(p=>{const b=document.getElementById('anp-'+p);if(b)b.classList.toggle('on',p===n);});renderAnalytics();}
+function anToggleTable(k){const e=document.getElementById('tbl-an-'+k);if(!e)return;const open=e.style.display!=='none';e.style.display=open?'none':'block';AN_TBL[k]=!open;}
+function anMonths(n){const a=[];for(let i=n-1;i>=0;i--){const d=new Date();d.setDate(1);d.setMonth(d.getMonth()-i);a.push(d.toISOString().slice(0,7));}return a;}
+function anMLbl(m){const[y,mo]=m.split('-');return['janv','févr','mars','avr','mai','juin','juil','août','sept','oct','nov','déc'][+mo-1]+' '+y.slice(2);}
+function anEmpty(id,msg){const e=document.getElementById(id);if(e)e.innerHTML='<div class="an-empty">'+msg+'</div>';}
+// Total du patrimoine, même définition que le hero (finances + Bitget converti).
+function anTotalPat(){const bg=(typeof bitgetTotalUSD==='function')?bitgetTotalUSD():(pfVal()+INV.spotBalance);return getNetWorth()+convertAmt(bg,'USD',cur());}
+// Dépenses jour par jour sur les n derniers jours, dans la devise globale.
+function anDailyExp(days){
+  const map={},now=new Date();
+  FIN.data.transactions.forEach(t=>{
+    if(t.type!=='exp')return;
+    const d=Math.floor((now-new Date(t.date+'T00:00:00'))/86400000);
+    if(d<0||d>=days)return;
+    map[t.date]=(map[t.date]||0)+convertAmt(t.amount,t.cur||cur(),cur());
+  });
+  return map;
+}
+// Grille commune : axes discrets, la donnée reste l'élément le plus visible.
+function anScales(yFn,opts){
+  const o=opts||{};
+  return{x:{grid:{display:false},border:{color:'rgba(255,255,255,.07)'},ticks:{color:'#5A5A7A',font:{size:10,family:'JetBrains Mono'},maxRotation:0,autoSkipPadding:14}},
+         y:{grid:{color:'rgba(255,255,255,.045)',drawTicks:false},border:{display:false},ticks:{color:'#5A5A7A',font:{size:10,family:'JetBrains Mono'},padding:8,callback:yFn},...(o.y||{})}};
+}
+function anTip(labelFn){
+  return{backgroundColor:'#181826',borderColor:'#252536',borderWidth:1,titleColor:'#E8E0F0',bodyColor:'#9090B8',
+         titleFont:{family:'Syne',size:12,weight:'700'},bodyFont:{family:'JetBrains Mono',size:11},
+         padding:10,cornerRadius:8,displayColors:true,boxWidth:9,boxHeight:9,boxPadding:4,callbacks:{label:labelFn}};
+}
+// Légende HTML : l'identité passe par le texte, jamais par la couleur seule.
+function anLeg(id,items){
+  const e=document.getElementById(id);if(!e)return;
+  e.innerHTML=items.map(i=>`<span class="lg-i"><span class="lg-s" style="background:${i.c}"></span>${esc(i.n)}${i.v!=null?` <span class="lg-v">${i.v}</span>`:''}</span>`).join('');
+}
+function anSigned(v){return(v<0?'−':'')+fmtM(v);}
+function anTable(id,head,rows){
+  const e=document.getElementById(id);if(!e)return;
+  e.innerHTML=`<table class="an-tbl"><thead><tr>${head.map(h=>`<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr>${r.map(c=>`<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+  e.style.display=AN_TBL[id.replace('tbl-an-','')]?'block':'none';
+}
+// Sparkline : trait seul, sans axe ni étiquette — il porte la tendance, pas les valeurs.
+function anSpark(el,vals,col){
+  if(!el||vals.length<2)return;
+  const w=el.clientWidth||150,h=el.clientHeight||30,mn=Math.min(...vals),mx=Math.max(...vals),sp=(mx-mn)||1;
+  const pts=vals.map((v,i)=>[(i/(vals.length-1))*(w-2)+1,h-2-((v-mn)/sp)*(h-5)]);
+  const d=pts.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' ');
+  el.innerHTML=`<svg width="100%" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">`
+    +`<path d="${d} L ${w-1} ${h} L 1 ${h} Z" fill="${col}" opacity=".13"/>`
+    +`<path d="${d}" fill="none" stroke="${col}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`
+    +`<circle cx="${pts[pts.length-1][0].toFixed(1)}" cy="${pts[pts.length-1][1].toFixed(1)}" r="2.8" fill="${col}"/></svg>`;
+}
+// ── Tuiles chiffrées : ce qui se lit mieux en nombre qu'en graphe ──
+function anRenderTiles(ms){
+  const inc=ms.map(getMonthInc),exp=ms.map(getMonthExp),bal=ms.map((m,i)=>inc[i]-exp[i]);
+  const sInc=inc.reduce((s,x)=>s+x,0),sExp=exp.reduce((s,x)=>s+x,0);
+  const avgExp=sExp/(exp.length||1);
+  const avgBal=bal.reduce((s,x)=>s+x,0)/(bal.length||1);
+  const pat=anTotalPat();
+  const runway=avgExp>0?pat/avgExp:null;
+  const posM=bal.filter(x=>x>0).length;
+  const savR=sInc>0?((sInc-sExp)/sInc)*100:0;
+  // Croissance du capital, lue sur l'historique réel quand il existe.
+  const depuis=ms[0]+'-01';
+  const eq=(INV.equityHistory||[]).filter(h=>h.date&&h.date>=depuis);
+  let growth=null;
+  if(eq.length>1){const a=eq[0].total,b=eq[eq.length-1].total;if(a>0)growth=((b-a)/a)*100;}
+  // Plus gros poste de dépense du mois en cours.
+  const cm=thisMonth(),byCat={};
+  FIN.data.transactions.forEach(t=>{if(t.type==='exp'&&monthKey(t.date)===cm)byCat[t.catId]=(byCat[t.catId]||0)+convertAmt(t.amount,t.cur||cur(),cur());});
+  const top=Object.entries(byCat).sort((a,b)=>b[1]-a[1])[0];
+  const mExp=getMonthExp(cm);
+  const topShare=(top&&mExp>0)?(top[1]/mExp)*100:0;
+  const nJ=Object.keys(anDailyExp(30)).length;
+
+  const tiles=[
+    {l:'Solde moyen / mois',v:anSigned(avgBal),h:'sur '+ms.length+' mois · '+posM+'/'+ms.length+' mois positifs',
+     c:avgBal>=0?DV_IN:DV_OUT,sp:bal,spc:avgBal>=0?DV_IN:DV_OUT},
+    {l:'Autonomie',v:runway==null?'—':(runway>=99?'99+ mois':runway.toFixed(1)+' mois'),
+     h:runway==null?'aucune dépense enregistrée':'patrimoine ÷ '+fmtM(avgExp)+' de dépenses/mois',
+     c:runway==null?DV_OTHER:(runway>=6?DV_IN:runway>=3?'#AC9008':DV_OUT)},
+    {l:'Taux d’épargne',v:savR.toFixed(1)+'%',
+     h:savR>=20?'au-dessus du seuil de 20%':savR>=0?'sous le seuil de 20%':'tu dépenses plus que tu ne gagnes',
+     c:savR>=20?DV_IN:savR>=0?'#AC9008':DV_OUT,
+     sp:ms.map((m,i)=>inc[i]>0?((inc[i]-exp[i])/inc[i])*100:0),spc:savR>=20?DV_IN:'#AC9008'},
+    {l:'Dépense / jour',v:fmtM(avgExp/30.4),
+     h:nJ?nJ+' jour'+(nJ>1?'s':'')+' avec dépense sur 30':'aucune dépense sur 30 jours',c:'#AC9008'},
+    {l:'Plus gros poste',v:top?fmtM(top[1]):'—',
+     h:top?getCat(top[0]).ic+' '+esc(getCat(top[0]).n)+' · '+topShare.toFixed(0)+'% du mois':'aucune dépense ce mois-ci',c:DV_OUT},
+    {l:'Capital investi',v:growth==null?'—':(growth>=0?'+':'')+growth.toFixed(1)+'%',
+     h:growth==null?'historique insuffisant sur la période':'sur '+eq.length+' relevés · '+ms.length+' mois',
+     c:growth==null?DV_OTHER:(growth>=0?DV_IN:DV_OUT),sp:eq.map(h=>h.total),spc:(growth>=0?DV_IN:DV_OUT)}
+  ];
+  const el=document.getElementById('an-tiles');if(!el)return;
+  el.innerHTML=tiles.map((t,i)=>'<div class="an-tile" style="--tc:'+t.c+'"><div class="an-tl">'+t.l+'</div><div class="an-tv">'+t.v+'</div><div class="an-th">'+t.h+'</div>'+(t.sp?'<div class="an-spark" id="an-sp-'+i+'"></div>':'')+'</div>').join('');
+  tiles.forEach((t,i)=>{if(t.sp)anSpark(document.getElementById('an-sp-'+i),t.sp.filter(v=>isFinite(v)),t.spc);});
+}
+
+// ── Décomposition : d'où vient la variation du patrimoine ce mois-ci ──
+function anRenderWaterfall(){
+  const cm=thisMonth(),inc=getMonthInc(cm),exp=getMonthExp(cm);
+  // P&L investissement du mois, lu sur l'historique de capital quand il existe.
+  const eq=(INV.equityHistory||[]).filter(h=>h.date&&h.date.slice(0,7)===cm);
+  let pnl=0;if(eq.length>1)pnl=convertAmt(eq[eq.length-1].total-eq[0].total,'USD',cur());
+  const end=anTotalPat(),start=end-inc+exp-pnl;
+  const mid=start+inc-exp;
+  const steps=[
+    {n:'Début de mois',from:0,to:start,c:DV_OTHER,d:start},
+    {n:'Revenus',from:start,to:start+inc,c:DV_IN,d:inc},
+    {n:'Dépenses',from:mid,to:start+inc,c:DV_OUT,d:-exp},
+    {n:'Invest.',from:Math.min(mid,mid+pnl),to:Math.max(mid,mid+pnl),c:pnl>=0?DV_IN:DV_OUT,d:pnl},
+    {n:'Aujourd’hui',from:0,to:end,c:'#AC9008',d:end}
+  ];
+  mkChart('c-an-water',{type:'bar',data:{labels:steps.map(s=>s.n),datasets:[{
+    data:steps.map(s=>[s.from,s.to]),backgroundColor:steps.map(s=>s.c),
+    borderColor:DV_SURF,borderWidth:2,borderRadius:4,borderSkipped:false,minBarLength:4,
+    barPercentage:.62,categoryPercentage:.86}]},
+    options:{responsive:true,maintainAspectRatio:false,animation:{duration:600},
+      plugins:{legend:{display:false},tooltip:anTip(c=>{const s=steps[c.dataIndex];return(s.d>=0?'+ ':'− ')+fmtM(Math.abs(s.d));})},
+      scales:anScales(v=>fm(v,0))}});
+  anLeg('lg-an-water',[{n:'Entrée',c:DV_IN},{n:'Sortie',c:DV_OUT},{n:'Niveau atteint',c:'#AC9008'}]);
+  anTable('tbl-an-water',['Étape','Montant','Patrimoine après'],
+    steps.map(s=>[esc(s.n),(s.d>=0?'+ ':'− ')+fmtM(Math.abs(s.d)),fmtM(s.to)]));
+}
+
+// ── Santé financière : 5 axes normalisés 0-100 ──
+function anRenderRadar(ms){
+  const sInc=ms.reduce((s,m)=>s+getMonthInc(m),0),sExp=ms.reduce((s,m)=>s+getMonthExp(m),0);
+  const avgExp=sExp/(ms.length||1);
+  const sav=sInc>0?Math.max(0,Math.min(100,((sInc-sExp)/sInc)*100/30*100)):0;
+  const passif=(typeof recMonthlyByType==='function')?recMonthlyByType('inc'):0;
+  const autofi=avgExp>0?Math.min(100,(passif/avgExp)*100):0;
+  const runway=avgExp>0?Math.min(100,(anTotalPat()/avgExp)/6*100):0;
+  // Diversification via Herfindahl : une seule poche = 0, poches équilibrées = 100.
+  const poches=[];
+  FIN.data.accounts.filter(a=>!isBitgetAcc(a)).forEach(a=>{
+    const v=Math.abs(convertAmt(accLiveBal(a),a.cur||cur(),cur()));if(v>0.01)poches.push(v);});
+  const cry=Math.abs(convertAmt(pfVal(),'USD',cur()));if(cry>0.01)poches.push(cry);
+  const tot=poches.reduce((s,x)=>s+x,0);
+  const hhi=tot>0?poches.reduce((s,x)=>s+Math.pow(x/tot,2),0):1;
+  const divers=poches.length>1?Math.max(0,Math.min(100,(1-hhi)/(1-1/poches.length)*100)):0;
+  const regul=ms.length?(ms.filter(m=>getMonthInc(m)-getMonthExp(m)>0).length/ms.length)*100:0;
+  const axes=[{n:'Épargne',v:sav},{n:'Auto-financement',v:autofi},{n:'Autonomie',v:runway},
+              {n:'Diversification',v:divers},{n:'Régularité',v:regul}];
+  mkChart('c-an-radar',{type:'radar',data:{labels:axes.map(a=>a.n),datasets:[{
+    data:axes.map(a=>Math.round(a.v)),backgroundColor:'rgba(201,162,39,.16)',borderColor:'#C9A227',borderWidth:2,
+    pointBackgroundColor:'#C9A227',pointBorderColor:DV_SURF,pointBorderWidth:2,pointRadius:4.5,pointHoverRadius:6.5}]},
+    options:{responsive:true,maintainAspectRatio:false,animation:{duration:600},
+      plugins:{legend:{display:false},tooltip:anTip(c=>c.raw+' / 100')},
+      scales:{r:{min:0,max:100,grid:{color:'rgba(255,255,255,.06)'},angleLines:{color:'rgba(255,255,255,.06)'},
+        pointLabels:{color:'#9090B8',font:{size:10.5,family:'Nunito'}},ticks:{display:false,stepSize:25}}}}});
+  const g=Math.round(axes.reduce((s,a)=>s+a.v,0)/axes.length);
+  const gc=g>=60?DV_IN:g>=35?'#C9A227':DV_OUT;
+  const gt=g>=60?'Structure saine':g>=35?'Des marges de progression':'Fragile — regarde l’autonomie et l’épargne';
+  const el=document.getElementById('an-radar-leg');
+  if(el)el.innerHTML='<div style="text-align:center;margin-top:4px"><div style="font-family:var(--fn);font-size:26px;font-weight:800;color:'+gc+'">'+g+'<span style="font-size:13px;color:var(--t2)"> / 100</span></div><div style="font-size:10.5px;color:var(--t2);margin-top:2px">'+gt+'</div></div>'
+    +'<table class="an-tbl"><tbody>'+axes.map(a=>'<tr><td>'+esc(a.n)+'</td><td>'+Math.round(a.v)+'</td></tr>').join('')+'</tbody></table>';
+}
+// ── Revenus / dépenses cumulés depuis janvier ──
+function anRenderYTD(){
+  const y=new Date().getFullYear(),nm=new Date().getMonth()+1,ms=[];
+  for(let i=1;i<=nm;i++)ms.push(y+'-'+String(i).padStart(2,'0'));
+  let ci=0,ce=0;const cInc=[],cExp=[];
+  ms.forEach(m=>{ci+=getMonthInc(m);ce+=getMonthExp(m);cInc.push(ci);cExp.push(ce);});
+  if(!ci&&!ce){anEmpty('lg-an-ytd','Aucune transaction cette année — ce graphe se remplira tout seul.');
+    mkChart('c-an-ytd',{type:'line',data:{labels:[],datasets:[]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}}}});return;}
+  const mk=(data,col,lbl)=>({label:lbl,data:data,borderColor:col,borderWidth:2,tension:.32,fill:true,
+    backgroundColor:col+'1F',pointRadius:0,pointHoverRadius:5,pointHoverBorderWidth:2,
+    pointHoverBackgroundColor:col,pointHoverBorderColor:DV_SURF});
+  mkChart('c-an-ytd',{type:'line',data:{labels:ms.map(anMLbl),
+    datasets:[mk(cInc,DV_IN,'Revenus cumulés'),mk(cExp,DV_OUT,'Dépenses cumulées')]},
+    options:{responsive:true,maintainAspectRatio:false,animation:{duration:600},
+      interaction:{mode:'index',intersect:false},
+      plugins:{legend:{display:false},tooltip:anTip(c=>c.dataset.label+' : '+fmtM(c.raw))},
+      scales:anScales(v=>fm(v,0))}});
+  anLeg('lg-an-ytd',[{n:'Revenus cumulés',c:DV_IN,v:fmtM(ci)},{n:'Dépenses cumulées',c:DV_OUT,v:fmtM(ce)},
+    {n:'Épargne dégagée',c:'#AC9008',v:anSigned(ci-ce)}]);
+  anTable('tbl-an-ytd',['Mois','Revenus cum.','Dépenses cum.','Écart'],
+    ms.map((m,i)=>[anMLbl(m),fmtM(cInc[i]),fmtM(cExp[i]),anSigned(cInc[i]-cExp[i])]));
+}
+
+// ── Repli depuis le plus haut : combien le capital a perdu par rapport à son pic ──
+function anRenderDrawdown(){
+  const eq=(INV.equityHistory||[]).slice(-120);
+  if(eq.length<3){
+    mkChart('c-an-dd',{type:'line',data:{labels:[],datasets:[]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}}}});
+    anEmpty('lg-an-dd','Il faut au moins 3 relevés de capital. L’historique se construit tout seul, un point par jour.');return;}
+  let peak=-Infinity;const dd=eq.map(h=>{peak=Math.max(peak,h.total);return peak>0?((h.total-peak)/peak)*100:0;});
+  const worst=Math.min(...dd),cur_=dd[dd.length-1];
+  mkChart('c-an-dd',{type:'line',data:{labels:eq.map(h=>h.date.slice(5)),datasets:[{
+    data:dd,borderColor:DV_OUT,borderWidth:2,fill:true,backgroundColor:DV_OUT+'22',tension:.28,
+    pointRadius:0,pointHoverRadius:5,pointHoverBackgroundColor:DV_OUT,pointHoverBorderColor:DV_SURF,pointHoverBorderWidth:2}]},
+    options:{responsive:true,maintainAspectRatio:false,animation:{duration:600},
+      interaction:{mode:'index',intersect:false},
+      plugins:{legend:{display:false},tooltip:anTip(c=>c.raw.toFixed(2)+'% sous le pic')},
+      scales:anScales(v=>v.toFixed(0)+'%',{y:{max:0}})}});
+  anLeg('lg-an-dd',[{n:'Repli actuel',c:DV_OUT,v:cur_.toFixed(2)+'%'},{n:'Pire repli',c:'#AC9008',v:worst.toFixed(2)+'%'}]);
+}
+
+// ── Intensité des dépenses : une case par jour, rampe séquentielle sur une seule teinte ──
+function anRenderHeat(){
+  const DAYS=91,map=anDailyExp(DAYS),el=document.getElementById('an-heat');if(!el)return;
+  const vals=Object.values(map).filter(v=>v>0).sort((a,b)=>a-b);
+  // Seuils par quartiles : l'échelle s'adapte à TES montants, pas à une valeur absolue.
+  const q=p=>vals.length?vals[Math.min(vals.length-1,Math.floor(vals.length*p))]:0;
+  const t=[q(.25),q(.5),q(.75)];
+  const cells=[],now=new Date();
+  // On commence un lundi pour que chaque colonne soit une semaine pleine.
+  const start=new Date(now);start.setDate(start.getDate()-(DAYS-1));
+  start.setDate(start.getDate()-((start.getDay()+6)%7));
+  for(let d=new Date(start);d<=now;d.setDate(d.getDate()+1)){
+    const k=d.toISOString().slice(0,10),v=map[k]||0;
+    const lv=v<=0?0:v<=t[0]?1:v<=t[1]?2:v<=t[2]?3:4;
+    cells.push('<div class="hm-c hm-l'+lv+'" title="'+fmtDate(k)+' — '+(v>0?fmtM(v):'aucune dépense')+'" aria-label="'+fmtDate(k)+', '+(v>0?fmtM(v):'aucune dépense')+'"></div>');
+  }
+  el.innerHTML=cells.join('');
+  const sc_=document.getElementById('an-heat-scale');
+  if(sc_)sc_.innerHTML=vals.length
+    ? 'moins<i class="hm-l0"></i><i class="hm-l1"></i><i class="hm-l2"></i><i class="hm-l3"></i><i class="hm-l4"></i>plus'
+      +'<span style="margin-left:auto;color:var(--t1)">'+vals.length+' jour'+(vals.length>1?'s':'')+' avec dépense sur '+DAYS+' · max '+fmtM(vals[vals.length-1])+'</span>'
+    : '<span style="color:var(--t2)">Aucune dépense enregistrée sur les 3 derniers mois.</span>';
+}
+
+// ── Où part l'argent : magnitude sur une seule teinte, identité portée par le texte ──
+function anRenderCats(){
+  const cm=thisMonth(),pm=lastMonth(),now={},prev={};
+  const jour=new Date().getDate();   // on n'est peut-etre qu'au 12 du mois
+  FIN.data.transactions.forEach(t=>{
+    if(t.type!=='exp')return;
+    const a=convertAmt(t.amount,t.cur||cur(),cur()),k=monthKey(t.date);
+    if(k===cm)now[t.catId]=(now[t.catId]||0)+a;
+    else if(k===pm&&(+t.date.slice(8,10))<=jour)prev[t.catId]=(prev[t.catId]||0)+a;
+  });
+  const rows=Object.entries(now).sort((a,b)=>b[1]-a[1]);
+  const el=document.getElementById('an-cats');if(!el)return;
+  if(!rows.length){el.innerHTML='<div class="an-empty">Aucune dépense ce mois-ci.<br>Ce classement se remplira dès la première transaction.</div>';
+    anTable('tbl-an-cat',['Catégorie','Ce mois'],[]);return;}
+  // Au-delà de 7 entités on regroupe : on ne fabrique pas un 8e slot.
+  const top=rows.slice(0,7),rest=rows.slice(7);
+  const restSum=rest.reduce((s,r)=>s+r[1],0);
+  const tot=rows.reduce((s,r)=>s+r[1],0);
+  const mx=Math.max(...top.map(r=>r[1]),restSum);
+  const line=(name,ic,v,pv)=>{
+    const d=pv>0?((v-pv)/pv)*100:null;
+    const dc=d==null?'ne':d>0?'up':'dn';
+    const dt=d==null?'nouveau':(d>0?'+':'')+d.toFixed(0)+'%';
+    return '<div class="hb"><div class="hb-n">'+ic+' '+esc(name)+'</div>'
+      +'<div class="hb-t"><div class="hb-f" style="width:'+(mx>0?(v/mx)*100:0).toFixed(1)+'%"></div></div>'
+      +'<div class="hb-v">'+fmtM(v)+'</div>'
+      +'<div class="hb-d '+dc+'" title="écart avec le mois précédent">'+dt+'</div></div>';
+  };
+  el.innerHTML=top.map(([id,v])=>{const c=getCat(id);return line(c.n,c.ic,v,prev[id]||0);}).join('')
+    +(rest.length?line('Autres ('+rest.length+')','▫️',restSum,rest.reduce((s,r)=>s+(prev[r[0]]||0),0)):'')
+    +'<div style="display:flex;justify-content:space-between;border-top:1px solid var(--border);margin-top:9px;padding-top:9px;font-size:11.5px"><span style="color:var(--t2)">Total du mois</span><span style="font-family:var(--fm);color:var(--t0);font-weight:600">'+fmtM(tot)+'</span></div>';
+  anTable('tbl-an-cat',['Catégorie','Ce mois','Mois préc. (même date)','Part'],
+    rows.map(([id,v])=>[esc(getCat(id).n),fmtM(v),fmtM(prev[id]||0),(tot>0?(v/tot)*100:0).toFixed(1)+'%']));
+}
+
+// ── Structure du patrimoine : barre empilée 100%, un segment par poche ──
+function anRenderStruct(){
+  const cc=cur(),segs=[],neg=[];
+  FIN.data.accounts.filter(a=>!isBitgetAcc(a)).forEach(a=>{
+    const v=convertAmt(accLiveBal(a),a.cur||cc,cc);
+    if(v>0.01)segs.push({n:a.n,v:v});else if(v<-0.01)neg.push({n:a.n,v:v});});
+  const bg=(typeof bitgetTotalUSD==='function')?bitgetTotalUSD():(pfVal()+INV.spotBalance);
+  const cry=convertAmt(bg,'USD',cc);if(cry>0.01)segs.push({n:'Bitget',v:cry});
+  segs.sort((a,b)=>b.v-a.v);
+  if(!segs.length){
+    mkChart('c-an-struct',{type:'bar',data:{labels:[],datasets:[]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}}}});
+    anEmpty('lg-an-struct','Ajoute un compte ou connecte Bitget pour voir la structure.');return;}
+  const top=segs.slice(0,7),rest=segs.slice(7);
+  if(rest.length)top.push({n:'Autres ('+rest.length+')',v:rest.reduce((s,x)=>s+x.v,0)});
+  const tot=top.reduce((s,x)=>s+x.v,0)||1;
+  mkChart('c-an-struct',{type:'bar',data:{labels:[''],datasets:top.map((s,i)=>({
+    label:s.n,data:[(s.v/tot)*100],backgroundColor:i<7?DV[i]:DV_OTHER,
+    borderColor:DV_SURF,borderWidth:2,borderRadius:4,borderSkipped:false}))},
+    options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,animation:{duration:600},
+      plugins:{legend:{display:false},tooltip:anTip(c=>c.dataset.label+' : '+c.raw.toFixed(1)+'%')},
+      scales:{x:{stacked:true,max:100,grid:{display:false},border:{display:false},
+                 ticks:{color:'#5A5A7A',font:{size:10,family:'JetBrains Mono'},callback:v=>v+'%'}},
+              y:{stacked:true,grid:{display:false},border:{display:false},ticks:{display:false}}}}});
+  anLeg('lg-an-struct',top.map((s,i)=>({n:s.n,c:i<7?DV[i]:DV_OTHER,v:((s.v/tot)*100).toFixed(1)+'%'})));
+  // Les soldes negatifs sont exclus de la barre : on le dit plutot que de les effacer.
+  if(neg.length){const e=document.getElementById('lg-an-struct');
+    if(e)e.insertAdjacentHTML('beforeend','<div style="flex-basis:100%;font-size:10.5px;color:var(--t2);margin-top:5px">Hors barre — '+neg.length+' compte'+(neg.length>1?'s':'')+' à découvert : '+neg.map(x=>esc(x.n)+' '+anSigned(x.v)).join(' · ')+'</div>');}
+}
+
+// ── Solde mensuel : polarité, vert au-dessus de zéro, rose en dessous ──
+function anRenderBalance(ms){
+  const bal=ms.map(m=>getMonthInc(m)-getMonthExp(m));
+  const pos=bal.filter(x=>x>0).length;
+  mkChart('c-an-bal',{type:'bar',data:{labels:ms.map(anMLbl),datasets:[{
+    data:bal,backgroundColor:bal.map(v=>v>=0?DV_IN:DV_OUT),
+    borderColor:DV_SURF,borderWidth:2,borderRadius:4,borderSkipped:false,minBarLength:3,
+    barPercentage:.66,categoryPercentage:.85}]},
+    options:{responsive:true,maintainAspectRatio:false,animation:{duration:600},
+      plugins:{legend:{display:false},tooltip:anTip(c=>(c.raw>=0?'+ ':'− ')+fmtM(Math.abs(c.raw)))},
+      scales:anScales(v=>fm(v,0))}});
+  const moy=bal.length?bal.reduce((s,x)=>s+x,0)/bal.length:0;
+  anLeg('lg-an-bal',[{n:'Mois positif',c:DV_IN,v:pos+'/'+ms.length},{n:'Mois négatif',c:DV_OUT,v:(ms.length-pos)+'/'+ms.length},
+    {n:'Moyenne',c:'#AC9008',v:anSigned(moy)}]);
+  anTable('tbl-an-bal',['Mois','Revenus','Dépenses','Solde'],
+    ms.map((m,i)=>[anMLbl(m),fmtM(getMonthInc(m)),fmtM(getMonthExp(m)),anSigned(bal[i])]));
+}
+
+// ── Orchestrateur : un échec isolé ne doit pas emporter tout le dashboard ──
+function renderAnalytics(){
+  const ms=anMonths(AN_PERIOD);
+  [[anRenderTiles,ms],[anRenderWaterfall,null],[anRenderRadar,ms],[anRenderYTD,null],
+   [anRenderDrawdown,null],[anRenderHeat,null],[anRenderCats,null],[anRenderStruct,null],
+   [anRenderBalance,ms]].forEach(([fn,arg])=>{
+    try{arg?fn(arg):fn();}catch(e){console.error('analytics '+fn.name,e);}
+  });
+}
+
 // TRANSACTIONS
 function renderTxs(){
   const as=document.getElementById('tx-acc-sel');if(as)as.innerHTML='<option value="all">Tous comptes</option>'+FIN.data.accounts.map(a=>`<option value="${a.id}"${a.id===UI.txf.acc?' selected':''}>${a.ic||'🏦'} ${esc(a.n)}</option>`).join('');
