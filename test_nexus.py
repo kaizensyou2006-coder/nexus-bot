@@ -237,6 +237,31 @@ class TestDivisionCrypto(unittest.TestCase):
         for meta in N.CRYPTO_AGENTS.values():
             self.assertTrue(meta.get("sys") and meta.get("name") and meta.get("emoji"))
 
+    def test_run_division_batch_un_seul_appel(self):
+        """Le mode batch parse une division entière depuis UN objet {agents, synthese}."""
+        import asyncio, json
+        calls = {"n": 0}
+        async def fake_ai(session, system, user, **k):
+            calls["n"] += 1
+            return json.dumps({"agents": [
+                {"cle": "patrimoine", "score": 70, "resume": "ok",
+                 "recommandations": [{"titre": "T", "detail": "d", "impact": "n/d", "priorite": "haute"}]},
+                {"cle": "depenses", "score": 55, "resume": "ok2", "recommandations": []}],
+                "synthese": {"score": 62, "resume": "s",
+                             "recommandations": [{"titre": "S", "detail": "d", "priorite": "haute"}]}})
+        old_ai, old_batch = N._ai_text, N.AI_BATCH_AGENTS
+        try:
+            N._ai_text = fake_ai
+            N.AI_BATCH_AGENTS = True
+            agents, synth = asyncio.new_event_loop().run_until_complete(
+                N.run_division(None, ["patrimoine", "depenses"], N.AGENTS, "SNAP", "Finance"))
+            self.assertEqual(calls["n"], 1)                       # UN seul appel pour 2 agents
+            self.assertEqual(agents[0]["name"], N.AGENTS["patrimoine"]["name"])
+            self.assertEqual(agents[0]["score"], 70)
+            self.assertTrue(synth and synth.get("recommandations"))
+        finally:
+            N._ai_text, N.AI_BATCH_AGENTS = old_ai, old_batch
+
     def test_business_agents_definis(self):
         self.assertEqual(set(N.BUSINESS_ORDER), set(N.BUSINESS_AGENTS.keys()))
         for k in ("revenus", "tresorerie", "dettes", "fiscalite", "securite"):

@@ -134,6 +134,9 @@ AI_MODEL_ALLOW    = {"claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5",
 AI_THINK_MODELS   = {"claude-opus-5", "claude-sonnet-5", "claude-opus-4-8", "claude-fable-5-1"}
 AI_MAX_TOKENS     = int(_conf("AI_MAX_TOKENS") or "8000")   # plafond de sortie du proxy
 AI_EFFORT         = (_conf("AI_EFFORT") or "high").lower()  # low|medium|high|xhigh|max (Anthropic)
+# Batching des agents : une DIVISION entière en UN SEUL appel (au lieu d'un appel/agent).
+# Divise le nombre d'appels par ~5-6 -> évite le rate-limit des modèles gratuits + plus rapide.
+AI_BATCH_AGENTS   = (_conf("AI_BATCH_AGENTS") or "1").lower() in ("1", "true", "yes")
 
 def ai_enabled():
     """L'IA est-elle utilisable ? Anthropic -> cle Claude ; OpenAI-compatible -> cle
@@ -1894,6 +1897,21 @@ _AGENT_JSON_RULE = (
     "Ne conseille jamais un produit financier precis ni un ordre d'achat/vente nominal : tu informes, tu n'es pas conseiller agree."
 )
 
+# Description d'une recommandation, réutilisée par le mode "division en 1 appel".
+_RECO_SHAPE = (
+    'Chaque recommandation = {"titre":"<court>","detail":"<concret>",'
+    '"impact":"<gain chiffre ex +45 000 FCFA/mois ou n/d>","priorite":"haute|moyenne|basse",'
+    '"action":<null OU {"type":"budget","categorie":"<nom>","montant":<FCFA/mois>} '
+    'OU {"type":"objectif","nom":"<nom>","cible":<FCFA>,"echeance":"<AAAA-MM-JJ ou vide>"} '
+    'OU {"type":"dca","actif":"<BTC|ETH|SOL...>","montant":<FCFA>,"frequence":"Hebdomadaire|Mensuel"}>}. '
+    "2 a 4 par analyste, chiffrees, classees par priorite. Francais, montants en FCFA. "
+    "Tu informes, jamais d'ordre nominal ni de prediction de prix."
+)
+
+def _agent_role(meta):
+    """Extrait le rôle d'un agent (son sys sans la partie règle JSON)."""
+    return (meta.get("sys") or "").split("Reponds UNIQUEMENT")[0].strip()
+
 AGENTS = {
     "patrimoine": {
         "emoji": "🏦", "name": "Patrimoine & projection",
@@ -1984,17 +2002,26 @@ async def _openai_text(session, system, user, max_tokens=3000, want_json=True):
     attempts.append(base)
     last_err = None
     for payload in attempts:
-        try:
-            async with session.post(_openai_url(), json=payload, headers=_openai_headers(),
-                                    timeout=aiohttp.ClientTimeout(total=180)) as r:
-                data = await r.json()
-            if r.status >= 400:
-                last_err = (data.get("error") or {}).get("message") or ("HTTP %d" % r.status)
-                continue        # p.ex. response_format non supporte -> on retombe sur le payload nu
-            ch = (data.get("choices") or [{}])[0]
-            return ((ch.get("message") or {}).get("content")) or ""
-        except Exception as e:
-            last_err = str(e)
+        for tent in range(3):     # petit backoff sur rate-limit ponctuel (429 / burst)
+            try:
+                async with session.post(_openai_url(), json=payload, headers=_openai_headers(),
+                                        timeout=aiohttp.ClientTimeout(total=180)) as r:
+                    status = r.status
+                    data = await r.json()
+                if status == 429:
+                    last_err = (data.get("error") or {}).get("message") or "rate limit"
+                    if "per-day" in str(last_err).lower() or "daily" in str(last_err).lower():
+                        break     # quota JOURNALIER : inutile de réessayer, on remonte l'erreur
+                    await asyncio.sleep(2.5 * (tent + 1))
+                    continue
+                if status >= 400:
+                    last_err = (data.get("error") or {}).get("message") or ("HTTP %d" % status)
+                    break         # p.ex. response_format non supporté -> on retombe sur le payload nu
+                ch = (data.get("choices") or [{}])[0]
+                return ((ch.get("message") or {}).get("content")) or ""
+            except Exception as e:
+                last_err = str(e)
+                await asyncio.sleep(1.5 * (tent + 1))
     raise RuntimeError(last_err or "erreur fournisseur IA")
 
 
@@ -2218,14 +2245,64 @@ async def _synthesize(session, agents, snap, lead_sys=None):
     return synth
 
 
+async def run_division(session, order, registry, snap, label, question=""):
+    """Exécute une division d'agents et renvoie (agents[], synthese).
+    - AI_BATCH_AGENTS=1 (défaut) : TOUTE la division en UN SEUL appel (5-6x moins d'appels
+      -> pas de rate-limit sur les modèles gratuits, plus rapide).
+    - Sinon : un appel par agent (mode historique)."""
+    if not AI_BATCH_AGENTS:
+        agents = list(await asyncio.gather(*[run_agent(session, k, question, snap, registry=registry) for k in order]))
+        return agents, await _synthesize(session, agents, snap)
+    roles = "\n".join('- cle "%s" (%s) : %s' % (k, registry[k]["name"], _agent_role(registry[k])) for k in order)
+    sys_p = (
+        "Tu es une ÉQUIPE de %d analystes financiers de NEXUS (division %s). Tu produis l'analyse de "
+        "CHAQUE analyste, PUIS une synthèse commune. Réponds UNIQUEMENT par un objet JSON valide, sans "
+        "texte autour ni bloc de code, de la forme : "
+        '{"agents":[{"cle":"<cle exacte>","score":<0-100>,"resume":"<1-2 phrases>","recommandations":[<recos>]}], '
+        '"synthese":{"score":<0-100>,"resume":"<1 phrase>","recommandations":[<les 3-5 recos les plus prioritaires, tous analystes confondus>]}}. '
+        "Un objet 'agents' par analyste ci-dessous, dans l'ordre, avec la 'cle' EXACTE. %s\n\nAnalystes :\n%s"
+        % (len(order), label, _RECO_SHAPE, roles))
+    user = "Situation à analyser :\n\n" + snap + (("\n\nQuestion prioritaire : " + question) if question else "")
+    try:
+        txt = await _ai_text(session, sys_p, user, max_tokens=4200)
+        obj = _parse_agent_json(txt)
+    except Exception as e:
+        log.warning("division %s (batch): %s", label, e)
+        # repli : dégrader proprement en marquant chaque agent en erreur (pas de rafale d'appels)
+        agents = [{"key": k, "emoji": registry[k]["emoji"], "name": registry[k]["name"], "error": str(e)} for k in order]
+        return agents, None
+    by = {}
+    for a in (obj.get("agents") or []):
+        if isinstance(a, dict) and a.get("cle") in registry:
+            by[a["cle"]] = a
+    agents = []
+    for k in order:
+        a = by.get(k)
+        meta = registry[k]
+        if a:
+            recs = a.get("recommandations") or a.get("recommendations") or []
+            agents.append({"key": k, "emoji": meta["emoji"], "name": meta["name"],
+                           "score": a.get("score"), "resume": a.get("resume") or "", "recommandations": recs[:4]})
+        else:
+            agents.append({"key": k, "emoji": meta["emoji"], "name": meta["name"], "error": "pas de réponse"})
+    synth = obj.get("synthese") if isinstance(obj.get("synthese"), dict) else None
+    if isinstance(synth, dict):
+        synth["recommandations"] = (synth.get("recommandations") or synth.get("recommendations") or [])[:5]
+    if not (synth and synth.get("recommandations")):
+        top = [r for a in agents for r in (a.get("recommandations") or [])
+               if (r.get("priorite") or "").lower() == "haute"] or \
+              [a["recommandations"][0] for a in agents if a.get("recommandations")]
+        if top:
+            synth = {"score": None, "resume": "Actions prioritaires consolidées.", "recommandations": top[:5]}
+    return agents, synth
+
+
 async def run_all_agents(session, question=""):
     """Lance les 4 agents en parallele + une synthese globale des priorites."""
     if not ai_enabled():
         return {"ok": False, "error": "IA non configuree (definir la cle du fournisseur : ANTHROPIC_API_KEY, ou AI_PROVIDER=openai + AI_API_KEY)."}
     snap = finance_snapshot()
-    results = await asyncio.gather(*[run_agent(session, k, question, snap) for k in AGENT_ORDER])
-    agents = list(results)
-    synth = await _synthesize(session, agents, snap)
+    agents, synth = await run_division(session, AGENT_ORDER, AGENTS, snap, "Finance", question)
     try:
         record_ai_snapshot()     # memoire : ce brief devient le point de comparaison suivant
     except Exception as e:
@@ -2393,14 +2470,7 @@ async def run_crypto_division(session, question=""):
     if not (BITGET_KEY and BITGET_SECRET and BITGET_PASS):
         return {"ok": False, "error": "Bitget non configuré (clés serveur)."}
     snap, rec = await crypto_snapshot(session)
-    results = await asyncio.gather(*[run_agent(session, k, question, snap, registry=CRYPTO_AGENTS)
-                                     for k in CRYPTO_ORDER])
-    agents = list(results)
-    lead = ("Tu es le CHEF DE LA DIVISION CRYPTO de NEXUS. On te donne les analyses de tes agents "
-            "(intégrité des données, allocation, DCA, performance, analyse par actif). Tu produis le plan "
-            "d'action crypto priorisé. " + _CRYPTO_RULE
-            + " 'recommandations' = les 3 à 5 actions crypto les plus importantes.")
-    synth = await _synthesize(session, agents, snap, lead_sys=lead)
+    agents, synth = await run_division(session, CRYPTO_ORDER, CRYPTO_AGENTS, snap, "Crypto (Bitget)", question)
     # Le contrôle d'exactitude déterministe est renvoyé tel quel (source de vérité, pas de l'IA).
     return {"ok": True, "agents": agents, "synthese": synth,
             "reconcile": rec.get("findings"), "reconcile_ok": rec.get("ok"), "ts": int(time.time())}
@@ -2447,13 +2517,7 @@ async def run_business_division(session, question=""):
     if not ai_enabled():
         return {"ok": False, "error": "IA non configurée."}
     snap = finance_snapshot()
-    results = await asyncio.gather(*[run_agent(session, k, question, snap, registry=BUSINESS_AGENTS)
-                                     for k in BUSINESS_ORDER])
-    agents = list(results)
-    lead = ("Tu es le CHEF DE LA DIVISION BUSINESS & PRÉVOYANCE de NEXUS (revenus, trésorerie, dettes, "
-            "fiscalité, sécurité). Tu produis le plan d'action priorisé de la division. " + _AGENT_JSON_RULE
-            + " 'recommandations' = les 3 à 5 actions les plus importantes.")
-    synth = await _synthesize(session, agents, snap, lead_sys=lead)
+    agents, synth = await run_division(session, BUSINESS_ORDER, BUSINESS_AGENTS, snap, "Business & Prévoyance", question)
     return {"ok": True, "agents": agents, "synthese": synth, "ts": int(time.time())}
 
 
@@ -2518,6 +2582,27 @@ async def run_grand_brief(session, question=""):
     return {"ok": True, "profil": profil, "agents": all_agents, "synthese": synth,
             "reconcile": (cry or {}).get("reconcile"), "reconcile_ok": (cry or {}).get("reconcile_ok"),
             "ts": int(time.time())}
+
+
+async def run_context_agent(session, view, ctx=""):
+    """Agent d'optimisation CONTEXTUEL : optimise l'écran (onglet) courant. UN seul appel,
+    ce qui le rend utilisable partout sans faire exploser les quotas."""
+    meta_name = "Optimisation — " + (str(view or "cet écran")[:40])
+    if not ai_enabled():
+        return {"key": "context", "name": meta_name, "error": "IA non configurée."}
+    sys_p = ("Tu es l'agent d'OPTIMISATION CONTEXTUEL de NEXUS. On te donne l'ÉCRAN actuel de l'app "
+             "(onglet) et un résumé de la situation financière. Donne 2 à 3 optimisations concrètes, "
+             "chiffrées et SPÉCIFIQUES à cet écran (pas de généralités). " + _AGENT_JSON_RULE)
+    user = ("Écran actuel : %s\n\nCe que l'écran montre :\n%s\n\nSituation financière globale :\n%s"
+            % (view, (str(ctx or "")[:2500]), finance_snapshot()))
+    try:
+        txt = await _ai_text(session, sys_p, user, max_tokens=1600)
+        obj = _parse_agent_json(txt)
+    except Exception as e:
+        return {"key": "context", "emoji": "✨", "name": meta_name, "error": str(e)}
+    recs = obj.get("recommandations") or obj.get("recommendations") or []
+    return {"key": "context", "emoji": "✨", "name": meta_name, "score": obj.get("score"),
+            "resume": obj.get("resume") or "", "recommandations": recs[:4]}
 
 
 # ----------------------- Actions IA (proposees -> appliquees dans l'app) -----------------------
@@ -2667,7 +2752,10 @@ async def h_agents(request):
     except Exception:
         pass
     try:
-        if which in ("all", "brief", "tout"):
+        if which == "context":
+            ag = await run_context_agent(session, str(body.get("view") or ""), str(body.get("context") or ""))
+            out = {"ok": True, "agents": [ag], "synthese": None}
+        elif which in ("all", "brief", "tout"):
             out = await run_all_agents(session, question)
         elif which in ("grand", "grand-brief", "brief15", "profil", "tout15"):
             out = await run_grand_brief(session, question)

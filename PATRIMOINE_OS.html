@@ -2438,6 +2438,46 @@ function renderAgentCards(d,outId){
   });
   out.innerHTML=h||'<div style="font-size:12px;color:var(--t2)">Aucune recommandation.</div>';
 }
+/* ---------- Agent d'optimisation contextuel (bouton flottant, sur chaque onglet) ---------- */
+function injectTabOptimizer(){
+  if(document.getElementById('tab-optimize-fab'))return;
+  const fab=document.createElement('button');
+  fab.id='tab-optimize-fab';fab.type='button';fab.title="Optimiser cet onglet avec l'IA";
+  fab.innerHTML='✨ Optimiser';
+  fab.style.cssText='position:fixed;right:18px;bottom:18px;z-index:70;border:none;border-radius:24px;padding:11px 17px;font-family:var(--fb);font-weight:800;font-size:13px;cursor:pointer;background:linear-gradient(135deg,var(--gl),var(--gd));color:var(--bg);box-shadow:0 10px 30px -8px rgba(201,162,39,.6)';
+  fab.onclick=optimizeCurrentTab;
+  document.body.appendChild(fab);
+  const ovl=document.createElement('div');ovl.className='ovl';ovl.id='ovl-optim';
+  ovl.innerHTML='<div class="modal" style="max-width:560px"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px"><div style="font-weight:800;font-family:var(--fn);color:var(--gl)">✨ <span id="optim-title">Optimisation</span></div><button type="button" class="btn btn-ghost btn-sm" onclick="closeOvl(\'ovl-optim\')">✕</button></div><div id="optim-out"></div></div>';
+  document.body.appendChild(ovl);
+}
+function tabContextSummary(view){
+  const p=[];
+  try{
+    if(typeof getNetWorth==='function')p.push('Patrimoine: '+fmtM(getNetWorth()));
+    if(typeof getMonthInc==='function')p.push('Revenus mois: '+fmtM(getMonthInc(thisMonth()))+' · Dépenses: '+fmtM(getMonthExp(thisMonth()))+' · Épargne: '+getSavRate()+'%');
+    if(view==='budgets'||view==='Budgets & Objectifs'){(FIN.data.budgets||[]).forEach(b=>p.push('Budget '+getCat(b.catId).n+': '+fmtM(getBudSpent(b))+'/'+fmtM(b.amount)));(FIN.data.goals||[]).forEach(g=>p.push('Objectif '+g.n+': '+fmtM(g.current)+'/'+fmtM(g.target)));}
+    if(/portefeuille|dca|bitget|marchés|analyse/i.test(view)&&typeof INV!=='undefined'){if(typeof pfVal==='function')p.push('Portefeuille: $'+pfVal().toFixed(0));(INV.dcas||[]).forEach(d=>p.push('DCA '+d.asset+' '+fmtM(d.amount)+' '+d.freq));}
+    if(/transaction|dépense|revenu/i.test(view)&&typeof txByCat==='function'){txByCat('exp').slice(0,6).forEach(c=>p.push('Dépense '+c.cat.n+': '+fmtM(c.val)));}
+  }catch(e){}
+  return p.join('\n')||('vue '+view);
+}
+async function optimizeCurrentTab(){
+  injectTabOptimizer();
+  const view=(typeof UI!=='undefined'&&UI.view)||'dashboard';
+  const label=(typeof TITLES!=='undefined'&&TITLES[view])||view;
+  document.getElementById('optim-title').textContent='Optimisation — '+label;
+  const out=document.getElementById('optim-out');openOvl('ovl-optim');
+  const srv=aiServer();
+  if(!srv){out.innerHTML='<div style="font-size:12px;color:var(--warn)">L\'IA passe par le serveur NEXUS. Configure-le dans ⚙ Paramètres.</div>';return;}
+  out.innerHTML='<div style="display:flex;align-items:center;gap:8px;color:var(--t2);font-size:13px"><div class="typing"><span></span><span></span><span></span></div> Analyse de l\'écran… (10–20 s)</div>';
+  try{
+    const r=await fetch(srv+'/agents',{method:'POST',headers:(typeof nexusHdrs==='function')?nexusHdrs({'Content-Type':'application/json'}):{'Content-Type':'application/json'},signal:AbortSignal.timeout(120000),body:JSON.stringify({agent:'context',view:label,context:tabContextSummary(label)})});
+    const d=await r.json();
+    if(!r.ok||!d.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
+    renderAgentCards(d,'optim-out');
+  }catch(e){out.innerHTML='<div style="font-size:12px;color:var(--err)">Erreur : '+esc(e.message)+'</div>';}
+}
 function renderAI(){const msgs=document.getElementById('chat-msgs'),suggs=document.getElementById('chat-suggs');if(!UI.chatMsgs.length){msgs.innerHTML='<div class="cmsg"><div class="cav ai">N</div><div class="cbub"><strong>Bonjour ! Je suis NEXUS IA.</strong><br>J\'ai accès complet à vos données. L\'IA passe par votre <strong>serveur NEXUS</strong> (clé sécurisée côté serveur). Lancez un <strong>agent d\'optimisation</strong> ci-dessus, ou posez-moi une question.</div></div>';suggs.innerHTML=SUGGS.map((s,i)=>`<button type="button" class="sugg" onclick="insertSugg(${i})">${esc(s)}</button>`).join('');}else{renderChatMsgs();suggs.innerHTML='';}}
 /* La réponse du modèle était insérée en innerHTML sans échappement : un libellé
    ou une note recopiés depuis les données pouvaient contenir du HTML et s'exécuter.
@@ -3223,6 +3263,7 @@ document.addEventListener('DOMContentLoaded',()=>{
   setTimeout(()=>bgCalibPull(true),3500);setInterval(()=>{if(document.visibilityState==='visible')bgCalibPull(true);},5*60*1000);
   setTimeout(()=>{if(typeof nexusBizPush==='function')nexusBizPush();},5000);setInterval(()=>{if(typeof nexusBizPush==='function')nexusBizPush();},10*60*1000);
   if(_liveTimer)clearInterval(_liveTimer);_liveTimer=setInterval(updateLiveStatus,30000);
+  try{injectTabOptimizer();}catch(e){}
   fetchXOF().then(()=>{
   refreshPrices(true);
   // Refresh toutes les 60s normalement, 30s si on est sur la page Live
