@@ -1808,6 +1808,19 @@ def finance_snapshot():
         inc, exp, net, cnt = momo_totals_period(d)
         lines.append("  %s : entrees %s | sorties %s | net %s | %d operation(s)"
                      % (lbl, fmt_xof(inc), fmt_xof(exp), fmt_xof(net), cnt))
+    # Grosses operations recentes : sert aux agents Depenses et Securite (anomalies).
+    ops = STATE.get("momo") or []
+    start30 = today_wat() - datetime.timedelta(days=29)
+    recent = [m for m in ops if _item_date(m) >= start30]
+    top = sorted(recent, key=lambda m: -float(m.get("amount", 0) or 0))[:8]
+    if top:
+        lines.append("\n# GROSSES OPÉRATIONS MoMo (30 j)")
+        for m in top:
+            who = (str(m.get("payee") or m.get("text") or "")).strip()[:34]
+            lines.append("  %s %s%s [%s]"
+                         % ("sortie" if m.get("type") == "exp" else "entrée",
+                            fmt_xof(m.get("amount", 0)), (" · " + who) if who else "",
+                            str(m.get("net", "mtn")).upper()))
 
     # NSIA detail
     nsia = STATE.get("nsia") or {}
@@ -2393,6 +2406,57 @@ async def run_crypto_division(session, question=""):
             "reconcile": rec.get("findings"), "reconcile_ok": rec.get("ok"), "ts": int(time.time())}
 
 
+# ========================================================================
+# DIVISION BUSINESS & PRÉVOYANCE — revenus, trésorerie, dettes, fiscalité, sécurité
+# ========================================================================
+BUSINESS_AGENTS = {
+    "revenus": {
+        "emoji": "💼", "name": "Revenus & business",
+        "sys": ("Tu es l'agent REVENUS de NEXUS. Tu analyses les revenus (dont MRR/ARR business) et "
+                "leur diversification, et tu proposes des leviers concrets pour augmenter et sécuriser "
+                "les revenus (récurrents, passifs, nouvelles sources), en cohérence avec le patrimoine. "
+                + _AGENT_JSON_RULE)},
+    "tresorerie": {
+        "emoji": "🌊", "name": "Trésorerie & cashflow",
+        "sys": ("Tu es l'agent TRÉSORERIE de NEXUS. Tu évalues la liquidité et le coussin de sécurité "
+                "(nombre de mois de dépenses couverts par le cash disponible), tu anticipes les tensions "
+                "de trésorerie via les flux et les récurrents, et tu proposes comment renforcer le matelas. "
+                + _AGENT_JSON_RULE)},
+    "dettes": {
+        "emoji": "🧾", "name": "Dettes",
+        "sys": ("Tu es l'agent DETTES de NEXUS. À partir des dettes suivies, tu proposes une stratégie de "
+                "remboursement claire (avalanche = plus cher d'abord, ou boule de neige = plus petite d'abord), "
+                "tu chiffres l'ordre de priorité et l'effort mensuel soutenable. " + _AGENT_JSON_RULE)},
+    "fiscalite": {
+        "emoji": "📋", "name": "Fiscalité",
+        "sys": ("Tu es l'agent FISCALITÉ de NEXUS. Tu expliques EN GÉNÉRAL ce qu'il faut suivre et documenter "
+                "sur les plus-values crypto et l'OPCVM (dates, prix de revient, retraits), et les bonnes pratiques "
+                "de traçabilité. Tu n'es PAS conseiller fiscal : pas de calcul d'impôt personnalisé ni d'optimisation "
+                "nominale — invite à valider avec un professionnel. " + _AGENT_JSON_RULE)},
+    "securite": {
+        "emoji": "🛡️", "name": "Sécurité & anomalies",
+        "sys": ("Tu es l'agent SÉCURITÉ de NEXUS. Tu examines les grosses opérations MoMo et les flux pour repérer "
+                "des dépenses inhabituelles, des frais qui grimpent, des mouvements suspects, et tu rappelles l'hygiène "
+                "de sécurité (PIN, phishing, double vérification). Signale ce qui mérite un contrôle de l'utilisateur. "
+                + _AGENT_JSON_RULE)},
+}
+BUSINESS_ORDER = ["revenus", "tresorerie", "dettes", "fiscalite", "securite"]
+
+async def run_business_division(session, question=""):
+    """Division Business & Prévoyance : 5 agents sur la même photo financière + synthèse."""
+    if not ai_enabled():
+        return {"ok": False, "error": "IA non configurée."}
+    snap = finance_snapshot()
+    results = await asyncio.gather(*[run_agent(session, k, question, snap, registry=BUSINESS_AGENTS)
+                                     for k in BUSINESS_ORDER])
+    agents = list(results)
+    lead = ("Tu es le CHEF DE LA DIVISION BUSINESS & PRÉVOYANCE de NEXUS (revenus, trésorerie, dettes, "
+            "fiscalité, sécurité). Tu produis le plan d'action priorisé de la division. " + _AGENT_JSON_RULE
+            + " 'recommandations' = les 3 à 5 actions les plus importantes.")
+    synth = await _synthesize(session, agents, snap, lead_sys=lead)
+    return {"ok": True, "agents": agents, "synthese": synth, "ts": int(time.time())}
+
+
 # ----------------------- Actions IA (proposees -> appliquees dans l'app) -----------------------
 _VALID_ACTION_TYPES = ("budget", "objectif", "dca")
 
@@ -2553,6 +2617,11 @@ async def h_agents(request):
         elif which in CRYPTO_AGENTS:
             snap, _ = await crypto_snapshot(session)
             out = {"ok": True, "agents": [await run_agent(session, which, question, snap, registry=CRYPTO_AGENTS)],
+                   "synthese": None}
+        elif which in ("business", "prevoyance", "pro"):
+            out = await run_business_division(session, question)
+        elif which in BUSINESS_AGENTS:
+            out = {"ok": True, "agents": [await run_agent(session, which, question, registry=BUSINESS_AGENTS)],
                    "synthese": None}
         elif which in AGENTS:
             out = {"ok": True, "agents": [await run_agent(session, which, question)], "synthese": None}
@@ -3637,7 +3706,7 @@ if discord is not None:
         emb.add_field(name="⌨️ Commandes", value=(
             "`/solde` `/bitget` `/momo` `/nsia`\n"
             "`/rapport` `/recap [jours]` `/historique [jours]` `/pdf [jours]`\n"
-            "`/analyse` `/optim` `/crypto` `/sync` `/etat` `/panel` `/aide`"), inline=False)
+            "`/analyse` `/optim` `/crypto` `/business` `/sync` `/etat` `/panel` `/aide`"), inline=False)
         now = now_wat()
         emb.set_footer(text="NEXUS • alertes auto ±%.0f%% • MAJ %s" % (ALERT_PCT, now.strftime("%d/%m %H:%M")))
         view = PanelView()
@@ -3796,6 +3865,28 @@ async def run_discord(http_session):
             await interaction.followup.send(embed=emb, **({"view": view} if view else {}))
         await send_ai_brief(data, _send)
 
+    @tree.command(name="business", description="Division Business & Prévoyance : revenus, trésorerie, dettes, fiscalité, sécurité")
+    @discord.app_commands.describe(agent="Cibler : revenus, tresorerie, dettes, fiscalite, securite (vide = division complète)")
+    async def _cmd_business(interaction, agent: str = ""):
+        if not ai_enabled():
+            await interaction.response.send_message(
+                "🧠 IA non configurée : définis **ANTHROPIC_API_KEY**, ou **AI_PROVIDER=openai** + **AI_API_KEY**.", ephemeral=True)
+            return
+        await interaction.response.defer(thinking=True)
+        key = (agent or "").strip().lower()
+        try:
+            await refresh_bitget_state(HTTP_SESSION)
+            if key in BUSINESS_AGENTS:
+                data = {"ok": True, "agents": [await run_agent(HTTP_SESSION, key, "", registry=BUSINESS_AGENTS)], "synthese": None}
+            else:
+                data = await run_business_division(HTTP_SESSION)
+        except Exception as e:
+            await interaction.followup.send("Erreur division business : %s" % e)
+            return
+        async def _send(emb, view):
+            await interaction.followup.send(embed=emb, **({"view": view} if view else {}))
+        await send_ai_brief(data, _send)
+
     @tree.command(name="solde", description="Patrimoine total consolidé (MoMo + NSIA + Bitget)")
     async def _cmd_solde(interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -3934,7 +4025,8 @@ async def run_discord(http_session):
         e.add_field(name="🧠 Optimisations IA", value=(
             "`/optim` — plan d'action des 5 agents (patrimoine, dépenses, épargne, invest, objectifs)\n"
             "`/optim invest` — cibler un seul agent\n"
-            "`/crypto` — division crypto : contrôle d'exactitude Bitget + analyse dédiée"), inline=False)
+            "`/crypto` — division crypto : contrôle d'exactitude Bitget + analyse dédiée\n"
+            "`/business` — division business & prévoyance (revenus, trésorerie, dettes, fiscalité, sécurité)"), inline=False)
         e.add_field(name="⚙️ Contrôle", value=(
             "`/panel` — panneau de contrôle (tout d'un clic)\n"
             "`/sync` — synchroniser Bitget maintenant\n"
