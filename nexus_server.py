@@ -103,6 +103,28 @@ BITGET_READ_PATHS = (
 BITGET_ALLOW_WRITE = (_conf("BITGET_ALLOW_WRITE") or "").lower() in ("1", "true", "yes")
 GEN_CMD = "python -c 'import secrets;print(secrets.token_urlsafe(32))'"
 
+# ----------------------- IA / Agents (Claude) -----------------------
+# La cle Claude vit COTE SERVEUR : l'app appelle /ai (proxy) au lieu d'appeler
+# api.anthropic.com directement. Avant, la cle etait dans le navigateur (localStorage
+# + en-tete anthropic-dangerous-direct-browser-access) : une XSS, une extension ou un
+# acces a l'appareil l'exfiltrait, et elle facture le compte Anthropic sans plafond.
+ANTHROPIC_API_KEY = _conf("ANTHROPIC_API_KEY") or _conf("CLAUDE_API_KEY")
+ANTHROPIC_URL     = "https://api.anthropic.com/v1/messages"
+ANTHROPIC_VERSION = "2023-06-01"
+# fallbacks:"default" (repli serveur sur refus de politique) -> ce header exact.
+ANTHROPIC_BETA    = "server-side-fallback-2026-07-01"
+AI_MODEL          = _conf("AI_MODEL") or "claude-opus-5"
+# Modeles acceptes par le proxy (le client ne peut pas forcer un modele arbitraire).
+AI_MODEL_ALLOW    = {"claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5",
+                     "claude-opus-4-8", "claude-fable-5-1"}
+# Ces modeles gerent thinking adaptatif + output_config.effort (pas Haiku 4.5).
+AI_THINK_MODELS   = {"claude-opus-5", "claude-sonnet-5", "claude-opus-4-8", "claude-fable-5-1"}
+AI_MAX_TOKENS     = int(_conf("AI_MAX_TOKENS") or "8000")   # plafond de sortie du proxy
+AI_EFFORT         = (_conf("AI_EFFORT") or "high").lower()  # low|medium|high|xhigh|max
+AI_BRIEF_HOUR     = int(_conf("AI_BRIEF_HOUR") or "8")      # heure (WAT) du brief auto
+AI_BRIEF_EVERY    = int(_conf("AI_BRIEF_EVERY_DAYS") or "1")  # cadence en jours (1=quotidien)
+AI_BRIEF_AUTO     = (_conf("AI_BRIEF_AUTO") or "1").lower() in ("1", "true", "yes")
+
 # Session HTTP partagee (definie au demarrage) — utilisee par le bot Discord pour Bitget/OCR.
 HTTP_SESSION = None
 START_TS = int(time.time())
@@ -122,6 +144,10 @@ STATE = {
     "nsia": None,
     "bitget": None,      # {total, ts, holdings:[{coin,amt,val}]}
     "business": None,    # resume revenus/depenses pousse par l'app : {revM,expM,netM,mrr,arr,caTotal,depTotal,cur,ts}
+    "objectifs": None,   # budgets/objectifs/dettes/DCA pousses par l'app (agent Objectifs)
+    "catexp": None,      # depenses du mois par categorie {nom: montant} (memoire des agents)
+    "ai_snaps": [],      # memoire des agents : photos chiffrees successives (comparaison inter-briefs)
+    "ai_actions": [],    # file d'actions proposees par l'IA a appliquer dans l'app
     "balances": {},      # soldes captures par reseau : {"mtn":..,"moov":..}
     "panel_msg": None,   # id du message du panneau de controle (pour le re-editer)
     "updatedAt": None,
@@ -331,6 +357,9 @@ def reset_state():
     STATE["balances"] = {}
     STATE["patrimoine"] = None
     STATE["business"] = None
+    STATE["objectifs"] = None
+    STATE["catexp"] = None
+    STATE["ai_actions"] = []      # ai_snaps (memoire) conserve, comme history
     STATE["recap_keys"] = {}
     STATE["alert_flags"] = {}
     save_state()
@@ -966,6 +995,7 @@ async def h_health(request):
         "uptime": int(time.time()) - START_TS,
         "discord": bool(DISCORD_TOKEN and discord is not None),
         "bitget": bool(BITGET_KEY and BITGET_SECRET and BITGET_PASS),
+        "ia": bool(ANTHROPIC_API_KEY),
         "auth": (not AUTH_WEAK),
         "persistance": ("upstash" if (UPSTASH_URL and UPSTASH_TOKEN and _UPSTASH_OK)
                         else ("upstash-degrade" if (UPSTASH_URL and UPSTASH_TOKEN) else "fichier")),
@@ -1005,6 +1035,48 @@ def sanitize_business(b):
     out["cur"] = str(cur)[:8] if cur else "XOF"
     ts = _num_or_none(b.get("ts"))
     out["ts"] = int(ts) if ts is not None else int(time.time() * 1000)
+    return out
+
+def _s(v, n=60):
+    return str(v if v is not None else "")[:n]
+
+def sanitize_objectifs(o):
+    """Budgets / objectifs / dettes / DCA poussés par l'app -> structure bornée et sûre.
+    Sert l'agent Objectifs. Listes plafonnées (60 entrées) pour ne pas gonfler l'état."""
+    if not isinstance(o, dict):
+        raise ValueError("objectifs doit etre un objet")
+    def num(v):
+        n = _num_or_none(v)
+        return int(round(n)) if n is not None else 0
+    budgets, goals, debts, dcas = [], [], [], []
+    for b in (o.get("budgets") or [])[:60]:
+        if isinstance(b, dict):
+            budgets.append({"cat": _s(b.get("cat")), "limit": num(b.get("limit")), "spent": num(b.get("spent"))})
+    for g in (o.get("goals") or [])[:60]:
+        if isinstance(g, dict):
+            goals.append({"name": _s(g.get("name")), "current": num(g.get("current")),
+                          "target": num(g.get("target")), "deadline": _s(g.get("deadline"), 20)})
+    for d in (o.get("debts") or [])[:60]:
+        if isinstance(d, dict):
+            debts.append({"name": _s(d.get("name")), "balance": num(d.get("balance")),
+                          "original": num(d.get("original")), "due": _s(d.get("due"), 20)})
+    for d in (o.get("dcas") or [])[:60]:
+        if isinstance(d, dict):
+            dcas.append({"asset": _s(d.get("asset"), 16), "amount": num(d.get("amount")),
+                         "freq": _s(d.get("freq"), 16), "next": _s(d.get("next"), 20), "auto": bool(d.get("auto"))})
+    cur = o.get("cur", "XOF")
+    return {"cur": str(cur)[:8] if cur else "XOF", "budgets": budgets, "goals": goals,
+            "debts": debts, "dcas": dcas, "ts": int(time.time() * 1000)}
+
+def sanitize_catexp(m):
+    """Dépenses du mois par catégorie {nom: montant} -> bornée (40 entrées, nombres)."""
+    if not isinstance(m, dict):
+        raise ValueError("catExp doit etre un objet")
+    out = {}
+    for k, v in list(m.items())[:40]:
+        n = _num_or_none(v)
+        if n is not None:
+            out[_s(k, 40)] = int(round(n))
     return out
 
 def _json_depth(o, limit=40, d=0):
@@ -1061,6 +1133,17 @@ async def h_state(request):
                 STATE["patrimoine"] = validate_patrimoine(body["patrimoine"])
             if body.get("business") is not None:
                 STATE["business"] = sanitize_business(body["business"])
+            if body.get("objectifs") is not None:
+                STATE["objectifs"] = sanitize_objectifs(body["objectifs"])
+            if body.get("catExp") is not None:
+                STATE["catexp"] = sanitize_catexp(body["catExp"])
+            # Accuse reception des actions IA appliquees cote app : on les marque 'done'.
+            ack = body.get("ackActions")
+            if isinstance(ack, list) and ack:
+                done = set(str(x) for x in ack)
+                for a in (STATE.get("ai_actions") or []):
+                    if a.get("id") in done:
+                        a["status"] = "done"
             save_state()
         except ValueError as e:
             log.warning("/state POST refuse (%s): %s", _client_ip(request), e)
@@ -1084,6 +1167,9 @@ async def h_state(request):
         "balances": {k: _balance_entry(v)[0] for k, v in (STATE.get("balances") or {}).items()},
         "balanceSources": momo_balance_sources(),
         "bgCalib": STATE.get("bg_calib") or {"extra": 0, "staking": {}},
+        # Actions IA approuvees sur Discord et pas encore appliquees : l'app les execute
+        # puis renvoie ackActions.
+        "aiActions": [a for a in (STATE.get("ai_actions") or []) if a.get("status") == "approved"],
         "updatedAt": STATE["updatedAt"],
     }), request)
 
@@ -1341,6 +1427,9 @@ async def start_http():
     app.router.add_get("/momo/inbox", h_momo_inbox)
     app.router.add_route("GET", "/bitget/{path:.*}", h_bitget)
     app.router.add_route("POST", "/bitget/{path:.*}", h_bitget)
+    app.router.add_post("/ai", h_ai)              # proxy Claude (cle cote serveur)
+    app.router.add_get("/agents", h_agents)       # moteur d'agents (a la demande)
+    app.router.add_post("/agents", h_agents)
 
     async def _close_session(app):
         await app["session"].close()
@@ -1566,6 +1655,497 @@ def _chg(pct):
 def _ascii(s):
     """Nettoie pour le PDF (police latin-1)."""
     return (str(s or "")).encode("latin-1", "replace").decode("latin-1")
+
+# ========================================================================
+# MOTEUR D'AGENTS IA (Claude)
+# ------------------------------------------------------------------------
+# 4 agents specialises + une synthese. Chacun recoit une PHOTO chiffree du
+# patrimoine (finance_snapshot) et rend des recommandations STRUCTUREES (JSON).
+# Appele a la demande (app -> /agents) et en automatique (brief Discord).
+# ========================================================================
+
+def ai_metrics():
+    """Metriques cles du moment, pour la MEMOIRE des agents (comparaison inter-briefs)."""
+    c = consolidated_total()
+    _, exp7, _, _ = momo_totals_period(7)
+    _, exp30, _, _ = momo_totals_period(30)
+    b = STATE.get("business") or {}
+    return {
+        "total": int(round(c["total"])), "momo": int(round(c["momo"])),
+        "nsia": int(round(c["nsia"])), "bitget_usd": round(c["bitget_usd"], 2),
+        "exp7": int(round(exp7)), "exp30": int(round(exp30)),
+        "revM": int(round(float(b.get("revM", 0) or 0))),
+        "expM": int(round(float(b.get("expM", 0) or 0))),
+        "netM": int(round(float(b.get("netM", 0) or 0))),
+        "catexp": dict(STATE.get("catexp") or {}),
+    }
+
+def _prev_ai_snap():
+    """Dernier bilan enregistre un AUTRE jour (le 'brief precedent'), sinon le dernier."""
+    snaps = STATE.get("ai_snaps") or []
+    if not snaps:
+        return None
+    today = today_wat().isoformat()
+    for s in reversed(snaps):
+        if s.get("d") != today:
+            return s
+    return snaps[-1]
+
+def record_ai_snapshot():
+    """Enregistre (ou met a jour) le bilan chiffre du JOUR dans la memoire des agents."""
+    snaps = STATE.setdefault("ai_snaps", [])
+    today = today_wat().isoformat()
+    point = {"d": today, **ai_metrics()}
+    if snaps and snaps[-1].get("d") == today:
+        snaps[-1] = point
+    else:
+        snaps.append(point)
+    del snaps[:-30]           # ~30 bilans conserves
+    save_state()
+    return point
+
+def _evolution_block():
+    """Texte de comparaison au bilan precedent : deltas patrimoine, depenses, categories."""
+    prev = _prev_ai_snap()
+    if not prev:
+        return ""
+    cur = ai_metrics()
+    lines = ["\n# ÉVOLUTION DEPUIS LE DERNIER BILAN (%s)" % prev.get("d", "?")]
+    def line(lbl, now, before, better_down=False):
+        if not before:
+            return None
+        pct = (now - before) / abs(before) * 100.0
+        arrow = "▲" if now > before else ("▼" if now < before else "=")
+        return "  %s : %s -> %s (%s%+.1f%%)" % (lbl, fmt_xof(before), fmt_xof(now), arrow, pct)
+    for lbl, k in (("Patrimoine total", "total"), ("Dépenses 30 j", "exp30"),
+                   ("Dépenses du mois", "expM"), ("Revenus du mois", "revM")):
+        l = line(lbl, cur.get(k, 0), prev.get(k, 0))
+        if l:
+            lines.append(l)
+    # Deltas par categorie de depense (permet "resto +18%")
+    pc, cc = prev.get("catexp") or {}, cur.get("catexp") or {}
+    deltas = []
+    for cat, val in cc.items():
+        old = pc.get(cat)
+        if old:
+            pct = (val - old) / abs(old) * 100.0
+            if abs(pct) >= 10:
+                deltas.append((abs(pct), "  %s : %s -> %s (%+.0f%%)" % (cat, fmt_xof(old), fmt_xof(val), pct)))
+    if deltas:
+        lines.append("  Catégories qui bougent le plus :")
+        for _, txt in sorted(deltas, reverse=True)[:5]:
+            lines.append("  " + txt)
+    return "\n".join(lines) if len(lines) > 1 else ""
+
+def _objectifs_block():
+    """Texte des budgets / objectifs / dettes / DCA (agent Objectifs)."""
+    o = STATE.get("objectifs") or {}
+    if not o:
+        return ""
+    lines = ["\n# BUDGETS, OBJECTIFS & DETTES (suivi app)"]
+    for b in (o.get("budgets") or []):
+        lim, sp = b.get("limit", 0), b.get("spent", 0)
+        pct = (sp / lim * 100.0) if lim else 0
+        flag = " ⚠️ DÉPASSÉ" if lim and sp > lim else (" (proche)" if pct >= 80 else "")
+        lines.append("  Budget %s : %s / %s (%.0f%%)%s" % (b.get("cat", "?"), fmt_xof(sp), fmt_xof(lim), pct, flag))
+    for g in (o.get("goals") or []):
+        cur_, tgt = g.get("current", 0), g.get("target", 0)
+        pct = (cur_ / tgt * 100.0) if tgt else 0
+        dl = (" · échéance %s" % g.get("deadline")) if g.get("deadline") else ""
+        lines.append("  Objectif %s : %s / %s (%.0f%%)%s" % (g.get("name", "?"), fmt_xof(cur_), fmt_xof(tgt), pct, dl))
+    for d in (o.get("debts") or []):
+        lines.append("  Dette %s : reste %s (initiale %s)%s"
+                     % (d.get("name", "?"), fmt_xof(d.get("balance", 0)), fmt_xof(d.get("original", 0)),
+                        (" · échéance %s" % d.get("due")) if d.get("due") else ""))
+    for d in (o.get("dcas") or []):
+        lines.append("  DCA %s : %s / %s%s"
+                     % (d.get("asset", "?"), fmt_xof(d.get("amount", 0)), d.get("freq", "?"),
+                        " (auto)" if d.get("auto") else ""))
+    return "\n".join(lines) if len(lines) > 1 else ""
+
+def finance_snapshot():
+    """Photo chiffree complete de la situation, en texte compact pour le modele.
+    Toutes les briques de calcul deja fiabilisees (et testees) sont reutilisees :
+    consolidation, soldes par reseau (capture vs flux), periodes glissantes, NSIA,
+    Bitget, resume business, historique/tendance."""
+    c = consolidated_total()
+    src = momo_balance_sources()
+    lines = ["# PATRIMOINE (au %s, heure Benin)" % now_wat().strftime("%d/%m/%Y %H:%M")]
+    lines.append("Total consolide : %s" % fmt_xof(c["total"]))
+    lines.append("  - Mobile Money : %s" % fmt_xof(c["momo"]))
+    for net, v in (c.get("bynet") or {}).items():
+        lines.append("      %s : %s (%s)" % (net.upper(), fmt_xof(v),
+                     "solde reel" if src.get(net) == "capture" else "estime d'apres les flux"))
+    lines.append("  - NSIA OPCVM   : %s" % fmt_xof(c["nsia"]))
+    lines.append("  - Bitget crypto: %s (= %s au taux %.0f FCFA/USD)"
+                 % (fmt_usd(c["bitget_usd"]), fmt_xof(c["bitget_xof"]), get_usd_xof()))
+
+    # Flux Mobile Money sur plusieurs fenetres
+    lines.append("\n# FLUX MOBILE MONEY (fenetres glissantes)")
+    for d, lbl in ((7, "7 jours"), (30, "30 jours"), (90, "90 jours")):
+        inc, exp, net, cnt = momo_totals_period(d)
+        lines.append("  %s : entrees %s | sorties %s | net %s | %d operation(s)"
+                     % (lbl, fmt_xof(inc), fmt_xof(exp), fmt_xof(net), cnt))
+
+    # NSIA detail
+    nsia = STATE.get("nsia") or {}
+    if nsia:
+        lines.append("\n# NSIA (OPCVM)")
+        lines.append("  Total %s | investi %s | +/- value latente %s | +/- value realisee %s"
+                     % (fmt_xof(nsia.get("total", 0)), fmt_xof(nsia.get("invested", 0)),
+                        fmt_xof(nsia.get("pv_latente", 0)), fmt_xof(nsia.get("pv_realisee", 0))))
+
+    # Bitget : principales positions
+    bg = STATE.get("bitget") or {}
+    hold = sorted((bg.get("holdings") or []), key=lambda h: -float(h.get("val", 0) or 0))[:8]
+    if hold:
+        lines.append("\n# BITGET — principales positions (USD)")
+        for h in hold:
+            lines.append("  %s : %s" % (str(h.get("coin", "?")), fmt_usd(h.get("val", 0))))
+
+    # Business (revenus / depenses pousses par l'app)
+    b = STATE.get("business") or {}
+    if b:
+        curb = b.get("cur", "XOF")
+        def _fb(n):
+            try:
+                return fmt_xof(n) if curb == "XOF" else "%s %s" % (int(round(float(n or 0))), curb)
+            except Exception:
+                return str(n)
+        lines.append("\n# REVENUS & DEPENSES (mois courant)")
+        lines.append("  Revenus %s | Depenses %s | Net %s" % (_fb(b.get("revM")), _fb(b.get("expM")), _fb(b.get("netM"))))
+        if b.get("mrr"):
+            lines.append("  MRR %s | ARR %s" % (_fb(b.get("mrr")), _fb(b.get("arr"))))
+
+    # Historique / tendance
+    hist = STATE.get("history") or []
+    if len(hist) >= 2:
+        last = hist[-1]["total"]
+        def _delta(days):
+            if len(hist) > days and hist[-1 - days].get("total"):
+                base = hist[-1 - days]["total"]
+                return "%+.1f%% (%s -> %s)" % ((last - base) / base * 100.0, fmt_xof(base), fmt_xof(last))
+            return "n/d"
+        lines.append("\n# TENDANCE PATRIMOINE")
+        lines.append("  Sur 7 j : %s" % _delta(7))
+        lines.append("  Sur 30 j : %s" % _delta(30))
+        lines.append("  Courbe (30 derniers points) : %s" % sparkline([p["total"] for p in hist[-30:]]))
+    obj = _objectifs_block()
+    if obj:
+        lines.append(obj)
+    evo = _evolution_block()
+    if evo:
+        lines.append(evo)
+    return "\n".join(lines)
+
+
+# Regle de sortie commune : chaque agent DOIT renvoyer un objet JSON de cette forme.
+_AGENT_JSON_RULE = (
+    "Reponds UNIQUEMENT par un objet JSON valide, sans texte autour, sans bloc de code, "
+    "de la forme exacte : "
+    '{"score": <entier 0-100>, "resume": "<1-2 phrases>", '
+    '"recommandations": [{"titre": "<court>", "detail": "<explication concrete>", '
+    '"impact": "<gain chiffre estime, ex: +45 000 FCFA/mois ou n/d>", '
+    '"priorite": "haute|moyenne|basse", '
+    '"action": <null OU un objet applicable dans l\'app>}]}. '
+    "Le champ 'action' est OPTIONNEL : mets-le a null sauf si la recommandation se traduit "
+    "par une action concrete et sure a proposer. Formes autorisees UNIQUEMENT : "
+    '{"type":"budget","categorie":"<nom>","montant":<FCFA/mois>} pour plafonner une categorie ; '
+    '{"type":"objectif","nom":"<nom>","cible":<FCFA>,"echeance":"<AAAA-MM-JJ ou vide>"} pour creer un objectif d\'epargne ; '
+    '{"type":"dca","actif":"<BTC|ETH|SOL...>","montant":<FCFA>,"frequence":"Hebdomadaire|Mensuel"} pour programmer un DCA. '
+    "N'invente pas d'autres types. "
+    "Donne 2 a 4 recommandations, classees de la plus prioritaire a la moins prioritaire. "
+    "Chiffre l'impact quand c'est possible a partir des donnees. Ecris en francais, montants en FCFA. "
+    "Ne conseille jamais un produit financier precis ni un ordre d'achat/vente nominal : tu informes, tu n'es pas conseiller agree."
+)
+
+AGENTS = {
+    "patrimoine": {
+        "emoji": "🏦", "name": "Patrimoine & projection",
+        "sys": ("Tu es l'agent PATRIMOINE de NEXUS. Tu consolides Mobile Money + NSIA + Bitget, "
+                "tu juges la structure (repartition, liquidite, concentration, part crypto volatile), "
+                "tu reperes toute variation anormale et tu proposes comment stabiliser et faire croitre "
+                "le patrimoine total. " + _AGENT_JSON_RULE)},
+    "depenses": {
+        "emoji": "💸", "name": "Optimisation depenses",
+        "sys": ("Tu es l'agent DEPENSES de NEXUS. A partir des flux Mobile Money et du resume "
+                "revenus/depenses, tu reperes les postes qui derivent, les sorties recurrentes ou "
+                "evitables, et tu proposes des coupes concretes et chiffrees sans degrader le niveau de vie. "
+                + _AGENT_JSON_RULE)},
+    "epargne": {
+        "emoji": "🎯", "name": "Epargne & auto-financement",
+        "sys": ("Tu es l'agent EPARGNE de NEXUS. Tu calcules le taux d'epargne (net/revenus) et le taux "
+                "d'auto-financement (revenus passifs / depenses), tu evalues la trajectoire vers "
+                "l'independance financiere et tu proposes comment augmenter l'epargne et les revenus passifs. "
+                + _AGENT_JSON_RULE)},
+    "invest": {
+        "emoji": "📈", "name": "Investissement",
+        "sys": ("Tu es l'agent INVESTISSEMENT de NEXUS. Tu analyses le portefeuille Bitget + NSIA : "
+                "diversification, concentration, part de stablecoins, positions en perte, exposition au risque, "
+                "et pertinence du rythme de DCA. Tu proposes des ajustements de repartition et de timing, "
+                "en termes generaux (classes d'actifs, %), jamais un ordre nominal. " + _AGENT_JSON_RULE)},
+    "objectifs": {
+        "emoji": "🎯", "name": "Objectifs & budgets",
+        "sys": ("Tu es l'agent OBJECTIFS de NEXUS. Tu suis les BUDGETS (dépassements, catégories proches "
+                "de la limite), les OBJECTIFS d'épargne (avancement vs échéance : est-il tenable ?), les DETTES "
+                "(rythme de remboursement) et les plans DCA. Tu alertes sur chaque dérapage et proposes des "
+                "ajustements concrets (créer/relever un budget, créer un objectif, cadencer un DCA). " + _AGENT_JSON_RULE)},
+}
+AGENT_ORDER = ["patrimoine", "depenses", "epargne", "invest", "objectifs"]
+
+
+def _ai_headers():
+    return {"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": ANTHROPIC_VERSION,
+            "content-type": "application/json", "anthropic-beta": ANTHROPIC_BETA}
+
+
+async def _anthropic_text(session, system, user, max_tokens=3000, model=None, effort=None):
+    """Un appel Claude non-stream cote serveur -> texte du 1er bloc 'text'.
+    Leve une exception en cas d'erreur (a rattraper par l'appelant)."""
+    model = model or AI_MODEL
+    payload = {"model": model, "max_tokens": min(int(max_tokens), AI_MAX_TOKENS),
+               "system": system, "messages": [{"role": "user", "content": user}]}
+    if model in AI_THINK_MODELS:
+        payload["thinking"] = {"type": "adaptive"}
+        payload["output_config"] = {"effort": (effort or AI_EFFORT)}
+    if model in ("claude-opus-5", "claude-fable-5-1"):
+        payload["fallbacks"] = "default"     # repli serveur sur refus (cf. skill claude-api)
+    async with session.post(ANTHROPIC_URL, json=payload, headers=_ai_headers(),
+                            timeout=aiohttp.ClientTimeout(total=180)) as r:
+        data = await r.json()
+    if r.status >= 400:
+        raise RuntimeError((data.get("error") or {}).get("message") or ("HTTP %d" % r.status))
+    for blk in (data.get("content") or []):
+        if blk.get("type") == "text":
+            return blk.get("text") or ""
+    return ""
+
+
+def _parse_agent_json(text):
+    """Extrait l'objet JSON d'une reponse d'agent, defensivement (le modele peut
+    parfois entourer le JSON de texte ou d'un bloc de code)."""
+    t = (text or "").strip()
+    if t.startswith("```"):
+        t = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", t).strip()
+    try:
+        return json.loads(t)
+    except Exception:
+        pass
+    m = re.search(r"\{.*\}", t, re.S)      # premier objet {...}
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except Exception:
+            pass
+    return {"score": None, "resume": t[:400], "recommandations": []}
+
+
+async def run_agent(session, key, question="", snap=None):
+    """Lance un agent et renvoie son resultat structure (jamais d'exception)."""
+    meta = AGENTS.get(key)
+    if not meta:
+        return {"key": key, "error": "agent inconnu"}
+    if snap is None:
+        snap = finance_snapshot()
+    user = "Voici la situation financiere actuelle :\n\n" + snap
+    if question:
+        user += "\n\nQuestion prioritaire de l'utilisateur : " + question
+    try:
+        txt = await _anthropic_text(session, meta["sys"], user, max_tokens=2500)
+        obj = _parse_agent_json(txt)
+    except Exception as e:
+        log.warning("agent %s: %s", key, e)
+        return {"key": key, "emoji": meta["emoji"], "name": meta["name"], "error": str(e)}
+    recs = obj.get("recommandations") or obj.get("recommendations") or []
+    return {"key": key, "emoji": meta["emoji"], "name": meta["name"],
+            "score": obj.get("score"), "resume": obj.get("resume") or "",
+            "recommandations": recs[:4]}
+
+
+async def run_all_agents(session, question=""):
+    """Lance les 4 agents en parallele + une synthese globale des priorites."""
+    if not ANTHROPIC_API_KEY:
+        return {"ok": False, "error": "IA non configuree (ANTHROPIC_API_KEY absent)."}
+    snap = finance_snapshot()
+    results = await asyncio.gather(*[run_agent(session, k, question, snap) for k in AGENT_ORDER])
+    agents = list(results)
+    # Synthese : le modele hierarchise les recommandations des 4 agents en un plan d'action.
+    synth = None
+    digest = []
+    for a in agents:
+        if a.get("error"):
+            continue
+        for r in (a.get("recommandations") or []):
+            digest.append("[%s] %s — %s (impact %s, priorite %s)"
+                          % (a["name"], r.get("titre", ""), r.get("detail", ""),
+                             r.get("impact", "n/d"), r.get("priorite", "?")))
+    if digest:
+        sys_p = ("Tu es l'ORCHESTRATEUR de NEXUS. On te donne les recommandations de 4 agents financiers. "
+                 "Tu produis un plan d'action unique et priorise. " + _AGENT_JSON_RULE
+                 + " Le champ 'recommandations' contient les 3 a 5 actions les PLUS importantes, tous agents confondus.")
+        try:
+            txt = await _anthropic_text(session, sys_p,
+                                        "Recommandations des agents :\n" + "\n".join(digest)
+                                        + "\n\nSituation :\n" + snap, max_tokens=2000)
+            synth = _parse_agent_json(txt)
+        except Exception as e:
+            log.warning("synthese agents: %s", e)
+    try:
+        record_ai_snapshot()     # memoire : ce brief devient le point de comparaison suivant
+    except Exception as e:
+        log.warning("record_ai_snapshot: %s", e)
+    return {"ok": True, "agents": agents, "synthese": synth, "ts": int(time.time())}
+
+
+# ----------------------- Actions IA (proposees -> appliquees dans l'app) -----------------------
+_VALID_ACTION_TYPES = ("budget", "objectif", "dca")
+
+def _clean_action(a):
+    """Valide/normalise une action proposee par un agent. None si invalide."""
+    if not isinstance(a, dict):
+        return None
+    t = str(a.get("type") or "").lower()
+    if t not in _VALID_ACTION_TYPES:
+        return None
+    mont = _num_or_none(a.get("montant"))
+    if t == "budget":
+        cat = _s(a.get("categorie") or a.get("cat"))
+        if not cat or mont is None or mont <= 0:
+            return None
+        return {"type": "budget", "categorie": cat, "montant": int(round(mont)),
+                "label": "Budget %s : %s" % (cat, fmt_xof(mont))}
+    if t == "objectif":
+        nom = _s(a.get("nom") or a.get("name"))
+        cible = _num_or_none(a.get("cible") or a.get("target"))
+        if not nom or cible is None or cible <= 0:
+            return None
+        return {"type": "objectif", "nom": nom, "cible": int(round(cible)),
+                "echeance": _s(a.get("echeance") or a.get("deadline"), 20),
+                "label": "Objectif %s : %s" % (nom, fmt_xof(cible))}
+    if t == "dca":
+        actif = _s(a.get("actif") or a.get("asset"), 16).upper()
+        freq = _s(a.get("frequence") or a.get("freq"), 16) or "Mensuel"
+        if not actif or mont is None or mont <= 0:
+            return None
+        return {"type": "dca", "actif": actif, "montant": int(round(mont)), "frequence": freq,
+                "label": "DCA %s : %s / %s" % (actif, fmt_xof(mont), freq)}
+    return None
+
+def collect_actions(data):
+    """Extrait de toutes les recommandations (synthese + agents) les actions valides,
+    dedoublonnees par label. Renvoie une liste [{type,...,label}]."""
+    seen, out = set(), []
+    buckets = []
+    if data.get("synthese"):
+        buckets.append(data["synthese"].get("recommandations") or [])
+    for a in (data.get("agents") or []):
+        buckets.append(a.get("recommandations") or [])
+    for recs in buckets:
+        for r in recs:
+            act = _clean_action((r or {}).get("action"))
+            if act and act["label"] not in seen:
+                seen.add(act["label"])
+                out.append(act)
+    return out
+
+def register_ai_actions(data):
+    """Enregistre les actions proposees comme 'pending' dans l'etat (pour les boutons
+    Discord). Purge les anciennes non appliquees. Renvoie la liste avec un id stable."""
+    acts = collect_actions(data)
+    queue = []
+    for a in acts[:10]:
+        a = dict(a, id=("act%d" % new_id()), status="pending")
+        queue.append(a)
+    STATE["ai_actions"] = queue      # on ne garde que la derniere fournee
+    save_state()
+    return queue
+
+
+# ----------------------- Proxy /ai (clé côté serveur) -----------------------
+async def h_ai(request):
+    """Relaie les appels Claude de l'app vers l'API Anthropic AVEC la cle du serveur.
+    L'app n'a plus la cle : elle s'authentifie a NEXUS (jeton/cookie) et NEXUS signe.
+    Supporte le streaming (SSE) pour l'assistant chat."""
+    denied = guard(request)
+    if denied is not None:
+        return denied
+    if not ANTHROPIC_API_KEY:
+        return cors(web.json_response(
+            {"error": {"message": "IA non configuree : ajoute ANTHROPIC_API_KEY dans les variables du serveur."}},
+            status=503), request)
+    raw = await request.content.read(300001)
+    if len(raw) > 300000:
+        return cors(web.json_response({"error": {"message": "Requete trop volumineuse."}}, status=413), request)
+    try:
+        body = json.loads(raw or b"{}")
+    except Exception:
+        return cors(web.json_response({"error": {"message": "JSON invalide."}}, status=400), request)
+    if not isinstance(body, dict) or not isinstance(body.get("messages"), list):
+        return cors(web.json_response({"error": {"message": "Corps attendu : {messages:[...]}."}}, status=400), request)
+    # Le client ne choisit pas librement le modele ni la taille de sortie.
+    model = body.get("model") if body.get("model") in AI_MODEL_ALLOW else AI_MODEL
+    body["model"] = model
+    try:
+        body["max_tokens"] = min(int(body.get("max_tokens") or AI_MAX_TOKENS), AI_MAX_TOKENS)
+    except Exception:
+        body["max_tokens"] = AI_MAX_TOKENS
+    if model in ("claude-opus-5", "claude-fable-5-1"):
+        body.setdefault("fallbacks", "default")
+    want_stream = bool(body.get("stream"))
+    session = request.app["session"]
+    try:
+        if want_stream:
+            up = await session.post(ANTHROPIC_URL, json=body, headers=_ai_headers(),
+                                    timeout=aiohttp.ClientTimeout(total=180))
+            resp = web.StreamResponse(status=up.status)
+            resp.headers["Content-Type"] = up.headers.get("Content-Type", "text/event-stream")
+            cors(resp, request)
+            await resp.prepare(request)
+            async for chunk in up.content.iter_any():
+                await resp.write(chunk)
+            await resp.write_eof()
+            up.release()
+            return resp
+        async with session.post(ANTHROPIC_URL, json=body, headers=_ai_headers(),
+                                timeout=aiohttp.ClientTimeout(total=180)) as up:
+            text = await up.text()
+            status = up.status
+        return cors(web.Response(text=text, status=status, content_type="application/json"), request)
+    except Exception as e:
+        log.warning("proxy /ai: %s", e)
+        return cors(web.json_response({"error": {"message": "Relais IA indisponible : %s" % e}}, status=502), request)
+
+
+async def h_agents(request):
+    """Lance un agent (ou les 4 + synthese) et renvoie des recommandations structurees."""
+    denied = guard(request)
+    if denied is not None:
+        return denied
+    if not ANTHROPIC_API_KEY:
+        return cors(web.json_response({"ok": False, "error": "IA non configuree (ANTHROPIC_API_KEY absent)."},
+                                      status=503), request)
+    body = {}
+    if request.method == "POST":
+        body = await _read_json(request, 20000) or {}
+    which = (body.get("agent") or request.query.get("agent") or "all").lower()
+    question = (str(body.get("question") or "")[:500]).strip()
+    session = request.app["session"]
+    try:
+        await refresh_bitget_state(session)     # totaux frais avant analyse
+    except Exception:
+        pass
+    try:
+        if which in ("all", "brief", "tout"):
+            out = await run_all_agents(session, question)
+        elif which in AGENTS:
+            out = {"ok": True, "agents": [await run_agent(session, which, question)], "synthese": None}
+        else:
+            return cors(web.json_response({"ok": False, "error": "agent inconnu"}, status=400), request)
+    except Exception as e:
+        log.warning("/agents: %s", e)
+        return cors(web.json_response({"ok": False, "error": str(e)}, status=502), request)
+    return cors(web.json_response(out), request)
+
 
 def build_pdf_report(days=30):
     """Genere un rapport patrimoine PDF stylise avec graphiques (octets).
@@ -1884,6 +2464,77 @@ if discord is not None:
         e.set_footer(text="NEXUS • serveur 24/7")
         return e
 
+    def build_ai_embeds(data):
+        """Resultat des agents -> embeds Discord : 1 plan de synthese + 1 par agent."""
+        prio = {"haute": "🔴", "moyenne": "🟠", "basse": "🟢"}
+        def rec_val(r, maxi=900):
+            v = "%s\n*Impact estimé : %s*" % ((r.get("detail", "") or "")[:maxi], r.get("impact", "n/d"))
+            act = _clean_action(r.get("action"))
+            if act:
+                v += "\n🔧 *Applicable : %s*" % act["label"]
+            return v
+        if not data or not data.get("ok"):
+            return [discord.Embed(title="🧠 Optimisations IA",
+                    description="IA indisponible : %s" % ((data or {}).get("error") or "erreur"),
+                    color=0xE74C3C)]
+        embeds = []
+        syn = data.get("synthese") or {}
+        head = discord.Embed(title="🧠 NEXUS — Plan d'optimisation",
+                description=(syn.get("resume") or "Actions prioritaires, tous agents confondus :"),
+                color=GOLD)
+        for r in (syn.get("recommandations") or [])[:5]:
+            head.add_field(name="%s %s" % (prio.get((r.get("priorite") or "").lower(), "•"), r.get("titre", "")),
+                           value=rec_val(r), inline=False)
+        head.set_footer(text="NEXUS IA • analyse non contractuelle • %s" % now_wat().strftime("%d/%m %H:%M"))
+        embeds.append(head)
+        for a in (data.get("agents") or []):
+            if a.get("error"):
+                continue
+            sc = a.get("score")
+            e = discord.Embed(
+                title="%s %s%s" % (a.get("emoji", ""), a.get("name", ""),
+                    ("  ·  score %s/100" % sc) if isinstance(sc, (int, float)) else ""),
+                description=(a.get("resume") or "")[:600], color=0x5865F2)
+            for r in (a.get("recommandations") or [])[:3]:
+                e.add_field(name="%s %s" % (prio.get((r.get("priorite") or "").lower(), "•"), r.get("titre", "")),
+                            value=rec_val(r, 500), inline=False)
+            embeds.append(e)
+        return embeds[:10]
+
+    def build_actions_view(actions):
+        """Vue de boutons « Appliquer » : approuve une action IA, que l'app exécutera
+        à la prochaine synchro. Boutons non persistants (valables tant que le bot tourne)."""
+        if not actions:
+            return None
+        view = discord.ui.View(timeout=None)
+        for a in actions[:5]:
+            btn = discord.ui.Button(label=("✅ " + a["label"])[:80],
+                                    style=discord.ButtonStyle.success,
+                                    custom_id="nexus:apply:" + a["id"])
+            async def _cb(interaction, aid=a["id"], lbl=a["label"]):
+                ok = False
+                for x in (STATE.get("ai_actions") or []):
+                    if x.get("id") == aid:
+                        x["status"] = "approved"
+                        ok = True
+                        break
+                save_state()
+                await interaction.response.send_message(
+                    ("✅ **%s** approuvé — sera appliqué dans l'app à la prochaine synchro." % lbl)
+                    if ok else "Action introuvable (déjà traitée ?).", ephemeral=True)
+            btn.callback = _cb
+            view.add_item(btn)
+        return view
+
+    async def send_ai_brief(data, sender, ephemeral=False):
+        """Facteur commun : enregistre les actions, envoie les embeds, attache les boutons
+        « Appliquer » au 1er embed. `sender` = coroutine(embed, view) -> message."""
+        acts = register_ai_actions(data) if data.get("ok") else []
+        view = build_actions_view(acts)
+        embeds = build_ai_embeds(data)
+        for i, emb in enumerate(embeds):
+            await sender(emb, view if i == 0 else None)
+
     async def build_recap_embed(days):
         e = discord.Embed(title="📊 Rapport patrimoine — %d jours" % days, color=GOLD)
         inc, exp, net, cnt = momo_totals_period(days)
@@ -2015,6 +2666,37 @@ if discord is not None:
             except Exception as e:
                 log.warning("keepalive: %s", e)
             await asyncio.sleep(600)
+
+    async def agents_scheduler(client):
+        """Brief d'optimisations IA automatique : a AI_BRIEF_HOUR (heure Bénin), tous les
+        AI_BRIEF_EVERY jours, poste le plan d'action des 4 agents dans le salon rapports.
+        Désactivable via AI_BRIEF_AUTO=0. Ne fait rien sans ANTHROPIC_API_KEY."""
+        await client.wait_until_ready()
+        while not client.is_closed():
+            try:
+                if AI_BRIEF_AUTO and ANTHROPIC_API_KEY:
+                    now = now_wat()
+                    if now.hour >= AI_BRIEF_HOUR:
+                        today = now.date()
+                        lastd = None
+                        if STATE.get("ai_brief_last"):
+                            try:
+                                lastd = datetime.date.fromisoformat(STATE["ai_brief_last"])
+                            except Exception:
+                                lastd = None
+                        if lastd is None or (today - lastd).days >= max(1, AI_BRIEF_EVERY):
+                            await refresh_bitget_state(HTTP_SESSION)
+                            data = await run_all_agents(HTTP_SESSION)
+                            if data.get("ok"):
+                                async def _send(emb, view):
+                                    await post_report(client, embed=emb, view=view)
+                                await send_ai_brief(data, _send)
+                                STATE["ai_brief_last"] = today.isoformat()
+                                save_state()
+                                log.info("brief IA automatique envoyé")
+            except Exception as e:
+                log.error("agents_scheduler: %s", e)
+            await asyncio.sleep(3600)
 
     async def post_report(client, embed=None, content=None, view=None, file=None):
         """Envoie un message dans le salon des RETOURS (REPORT_CHANNEL), sinon le panneau."""
@@ -2273,6 +2955,24 @@ if discord is not None:
         async def b_status(self, interaction, button):
             await interaction.response.send_message(embed=build_status_embed(), ephemeral=True)
 
+        @discord.ui.button(label="Optimisations IA", emoji="🧠",
+                           style=discord.ButtonStyle.primary, custom_id="nexus:optim", row=1)
+        async def b_optim(self, interaction, button):
+            if not ANTHROPIC_API_KEY:
+                await interaction.response.send_message(
+                    "🧠 IA non configurée : ajoute **ANTHROPIC_API_KEY** aux variables du serveur.", ephemeral=True)
+                return
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            try:
+                await refresh_bitget_state(HTTP_SESSION)
+                data = await run_all_agents(HTTP_SESSION)
+            except Exception as e:
+                await interaction.followup.send("Erreur IA : %s" % e, ephemeral=True)
+                return
+            async def _send(emb, view):
+                await interaction.followup.send(embed=emb, ephemeral=True, **({"view": view} if view else {}))
+            await send_ai_brief(data, _send)
+
         @discord.ui.button(label="Redémarrer (re-scan)", emoji="♻️",
                            style=discord.ButtonStyle.primary, custom_id="nexus:rescan", row=2)
         async def b_rescan(self, interaction, button):
@@ -2482,7 +3182,7 @@ if discord is not None:
         emb.add_field(name="⌨️ Commandes", value=(
             "`/solde` `/bitget` `/momo` `/nsia`\n"
             "`/rapport` `/recap [jours]` `/historique [jours]` `/pdf [jours]`\n"
-            "`/analyse` `/sync` `/etat` `/panel` `/aide`"), inline=False)
+            "`/analyse` `/optim` `/sync` `/etat` `/panel` `/aide`"), inline=False)
         now = now_wat()
         emb.set_footer(text="NEXUS • alertes auto ±%.0f%% • MAJ %s" % (ALERT_PCT, now.strftime("%d/%m %H:%M")))
         view = PanelView()
@@ -2593,6 +3293,28 @@ async def run_discord(http_session):
         await interaction.response.defer(thinking=True)
         await interaction.followup.send(embed=await build_analyse_embed())
 
+    @tree.command(name="optim", description="Optimisations IA : plan d'action sur tes finances (5 agents)")
+    @discord.app_commands.describe(agent="Cibler un agent : patrimoine, depenses, epargne, invest, objectifs (vide = tous)")
+    async def _cmd_optim(interaction, agent: str = ""):
+        if not ANTHROPIC_API_KEY:
+            await interaction.response.send_message(
+                "🧠 IA non configurée : ajoute **ANTHROPIC_API_KEY** aux variables du serveur.", ephemeral=True)
+            return
+        await interaction.response.defer(thinking=True)
+        key = (agent or "").strip().lower()
+        try:
+            await refresh_bitget_state(HTTP_SESSION)
+            if key in AGENTS:
+                data = {"ok": True, "agents": [await run_agent(HTTP_SESSION, key)], "synthese": None}
+            else:
+                data = await run_all_agents(HTTP_SESSION)
+        except Exception as e:
+            await interaction.followup.send("Erreur IA : %s" % e)
+            return
+        async def _send(emb, view):
+            await interaction.followup.send(embed=emb, **({"view": view} if view else {}))
+        await send_ai_brief(data, _send)
+
     @tree.command(name="solde", description="Patrimoine total consolidé (MoMo + NSIA + Bitget)")
     async def _cmd_solde(interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -2699,6 +3421,9 @@ async def run_discord(http_session):
             "`/recap [jours]` — rapport sur N jours · ex `/recap 30`\n"
             "`/historique [jours]` — évolution + graphe + projection 12M\n"
             "`/pdf [jours]` — rapport PDF · ex `/pdf 7`"), inline=False)
+        e.add_field(name="🧠 Optimisations IA", value=(
+            "`/optim` — plan d'action des 5 agents (patrimoine, dépenses, épargne, invest, objectifs)\n"
+            "`/optim invest` — cibler un seul agent"), inline=False)
         e.add_field(name="⚙️ Contrôle", value=(
             "`/panel` — panneau de contrôle (tout d'un clic)\n"
             "`/sync` — synchroniser Bitget maintenant\n"
@@ -2746,7 +3471,8 @@ async def run_discord(http_session):
             asyncio.create_task(recap_scheduler(client))
             asyncio.create_task(history_scheduler(client))
             asyncio.create_task(keepalive_task())
-            log.info("tâches de fond démarrées : récaps auto + historique/alertes + keep-alive")
+            asyncio.create_task(agents_scheduler(client))
+            log.info("tâches de fond démarrées : récaps auto + historique/alertes + keep-alive + brief IA")
 
     @client.event
     async def on_message(message):
@@ -2811,6 +3537,7 @@ async def main():
     print(" - Discord import   :", DISCORD_CHANNEL or "non configure")
     print(" - Discord panneau  :", PANEL_CHANNEL or "non configure")
     print(" - OCR (ocr.space)  :", "OK" if OCR_API_KEY else "non configure")
+    print(" - IA / Agents      :", ("OK (%s)" % AI_MODEL) if ANTHROPIC_API_KEY else "non configure (ANTHROPIC_API_KEY)")
     print(" - Proxy Bitget     :", "LECTURE+ECRITURE (!)" if BITGET_ALLOW_WRITE else "lecture seule")
     print(" - Historique MoMo  :", MOMO_MAX, "operations max")
     print("=" * 58)

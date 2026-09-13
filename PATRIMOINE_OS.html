@@ -995,6 +995,20 @@ textarea.cinp::placeholder{color:var(--t3);}
     </div>
     <button class="btn btn-ghost" onclick="clearChat()">🗑 Effacer</button>
   </div>
+  <div class="card" id="agents-panel" style="padding:16px;margin-bottom:14px">
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:4px">
+      <div style="font-weight:800;font-family:var(--fn);color:var(--gl)">🧠 Agents d'optimisation</div>
+      <button class="btn btn-gold btn-sm" id="ag-all" onclick="runAgents('all')">⚡ Brief complet (4 agents)</button>
+    </div>
+    <p style="font-size:11px;color:var(--t2);font-family:var(--fm);margin:2px 0 10px">Chaque agent analyse tes données et propose des optimisations chiffrées et priorisées.</p>
+    <div style="display:flex;flex-wrap:wrap;gap:7px">
+      <button class="btn btn-ghost btn-sm" onclick="runAgents('patrimoine')">🏦 Patrimoine</button>
+      <button class="btn btn-ghost btn-sm" onclick="runAgents('depenses')">💸 Dépenses</button>
+      <button class="btn btn-ghost btn-sm" onclick="runAgents('epargne')">🎯 Épargne</button>
+      <button class="btn btn-ghost btn-sm" onclick="runAgents('invest')">📈 Investissement</button>
+    </div>
+    <div id="agents-out" style="margin-top:12px"></div>
+  </div>
   <div class="card" style="padding:16px;display:flex;flex-direction:column;height:calc(100vh - 220px);min-height:500px">
     <div id="chat-msgs" class="chat-msgs" role="log" aria-live="polite" aria-relevant="additions text" aria-label="Conversation avec NEXUS IA"></div>
     <div id="chat-suggs" style="display:flex;flex-wrap:wrap;gap:5px;margin-top:8px"></div>
@@ -1181,12 +1195,12 @@ textarea.cinp::placeholder{color:var(--t3);}
         </div>
       </div>
       <div class="card mb" style="border-color:rgba(155,110,248,.18)">
-        <div class="ch" style="color:var(--pu)">🤖 Claude IA — Clé Anthropic</div>
-        <p style="font-size:12px;color:var(--t2);margin-bottom:10px">Obtenez votre clé sur <a href="https://console.anthropic.com" target="_blank" style="color:var(--blu)">console.anthropic.com</a></p>
+        <div class="ch" style="color:var(--pu)">🤖 Claude IA</div>
+        <p style="font-size:12px;color:var(--t2);margin-bottom:10px">Recommandé : la clé Claude vit <strong>côté serveur NEXUS</strong> (variable <code>ANTHROPIC_API_KEY</code>). L'app appelle le proxy sécurisé du serveur — la clé ne transite plus par le navigateur. Le champ ci-dessous n'est utile qu'en usage <strong>hors-ligne</strong> (sans serveur) ; obtenez une clé sur <a href="https://console.anthropic.com" target="_blank" style="color:var(--blu)">console.anthropic.com</a>.</p>
         <div style="display:flex;gap:7px;flex-wrap:wrap;align-items:center">
-          <input type="password" class="fi" id="cf-ai-key" placeholder="sk-ant-api03-…" style="flex:1;min-width:160px;font-family:var(--fm);font-size:12px">
+          <input type="password" class="fi" id="cf-ai-key" placeholder="sk-ant-api03-…  (optionnel, hors-ligne)" style="flex:1;min-width:160px;font-family:var(--fm);font-size:12px">
           <button class="btn btn-gold btn-sm" onclick="saveAIKey()">Sauvegarder</button>
-          <button class="btn btn-ghost btn-sm" onclick="testAIKey()">Tester</button>
+          <button class="btn btn-ghost btn-sm" onclick="testAIKey()">Tester l'IA</button>
         </div>
         <div id="ai-key-status" style="font-size:11px;margin-top:7px;color:var(--t2)"></div>
       </div>
@@ -2223,7 +2237,7 @@ function renderSettings(){const sv=(id,v)=>{const e=document.getElementById(id);
 function saveSpotBalance(){INV.spotBalance=parseFloat(document.getElementById('cf-spot').value)||0;invSave();updSbWealth();toast('Solde mis à jour ✓','ok');}
 function saveInvConfig(){INV.goal=parseFloat(document.getElementById('cf-goal').value)||1000000;INV.risk=document.getElementById('cf-risk').value||'agressif';INV.dcaBudget=parseFloat(document.getElementById('cf-dca-budget').value)||300;FIN.data.settings.currency=document.getElementById('cf-currency').value||'XOF';invSave();finSave();toast('Sauvegardé ✓','ok');}
 function saveAIKey(){FIN.data.settings.aiKey=document.getElementById('cf-ai-key').value.trim();finSave();toast('Clé IA enregistrée ✓','ok');}
-async function testAIKey(){const el=document.getElementById('ai-key-status');if(el)el.innerHTML='<span style="color:var(--warn)">⟳ Test…</span>';try{const key=FIN.data.settings.aiKey;const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:claudeHeaders(key),signal:AbortSignal.timeout(20000),body:JSON.stringify({model:'claude-haiku-4-5',max_tokens:64,messages:[{role:'user',content:'OK'}]})});const d=await r.json();if(r.ok&&claudeText(d)){if(el)el.innerHTML='<span style="color:var(--ok)">✅ Connexion OK</span>';}else throw new Error(d.error?.message||'Erreur');}catch(e){if(el)el.innerHTML=`<span style="color:var(--err)">✗ ${e.message}</span>`;}}
+async function testAIKey(){const el=document.getElementById('ai-key-status');if(el)el.innerHTML='<span style="color:var(--warn)">⟳ Test…</span>';try{if(!aiReady())throw new Error('Configure le serveur NEXUS ou une clé.');const r=await aiCall({model:'claude-haiku-4-5',max_tokens:64,messages:[{role:'user',content:'OK'}]},{signal:AbortSignal.timeout(25000)});const d=await r.json();if(r.ok&&claudeText(d)){if(el)el.innerHTML='<span style="color:var(--ok)">✅ Connexion OK'+(aiServer()?' (via serveur)':' (clé locale)')+'</span>';}else throw new Error(d.error?.message||'Erreur');}catch(e){if(el)el.innerHTML=`<span style="color:var(--err)">✗ ${e.message}</span>`;}}
 function renderManualAssets(){const el=document.getElementById('manual-assets-list');if(!el)return;const m=Object.entries(TARGET).filter(([,a])=>a.manual);if(!m.length){el.innerHTML='<p style="color:var(--t2);font-size:12px">Aucun actif manuel.</p>';return;}el.innerHTML=m.map(([sym,a])=>`<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--b0)"><div style="width:30px;height:30px;border-radius:8px;background:${a.col}18;color:${a.col};display:flex;align-items:center;justify-content:center;font-size:14px">${a.ic}</div><div style="flex:1"><div style="font-size:13px;font-weight:700">${sym}</div><div style="font-size:10px;color:var(--t2)">${a.note||''}</div></div><input type="number" id="mp_${sym}" value="${a.price||0}" step="0.0001" style="width:110px;font-family:var(--fm);font-size:12px;padding:6px 9px;background:var(--s2);border:1px solid var(--border);border-radius:var(--r8);color:var(--t0)"><button class="btn btn-gold btn-sm" onclick="saveManualPrice('${sym}')">✓</button></div>`).join('');}
 function saveManualPrice(sym){const inp=document.getElementById('mp_'+sym);if(!inp)return;const v=parseFloat(inp.value);if(isNaN(v)||v<=0){toast('Prix invalide','err');return;}TARGET[sym].price=v;if(!INV.manualPrices)INV.manualPrices={};INV.manualPrices[sym]=v;PRICES[sym]={price:v,ch:TARGET[sym].change24h||0,src:'Manuel'};invSave();renderManualAssets();renderTicker();toast(`${sym}: ${sym==='NSIA'?fmFCFA(v):fm(v)} ✓`,'ok');}
 /* Clé Anthropic et clé JSONBin ne doivent jamais quitter le poste : un bin
@@ -2251,6 +2265,25 @@ function resetAll(){if(!confirm('⚠️ Effacer TOUTES les données ?'))return;l
    2) une requête peut se terminer sur stop_reason 'refusal' -> on active le
       repli côté serveur (fallbacks) pour qu'un autre modèle prenne le relais. */
 const CLAUDE_MODEL='claude-opus-5';
+/* La clé Claude vit désormais CÔTÉ SERVEUR. L'app appelle le proxy /ai du serveur
+   NEXUS (authentifié par cookie/jeton) ; le serveur y ajoute la clé. La clé ne
+   transite plus par le navigateur. Repli standalone : si aucun serveur n'est
+   configuré mais qu'une clé locale existe (usage hors-ligne), on garde l'appel direct. */
+function aiServer(){return (typeof nexusSrv==='function')?nexusSrv():'';}
+function aiReady(){return !!aiServer()||!!(FIN.data.settings&&FIN.data.settings.aiKey);}
+function aiCall(payload,opts){
+  opts=opts||{};
+  const srv=aiServer();
+  if(srv){
+    return fetch(srv+'/ai',{method:'POST',signal:opts.signal,
+      headers:(typeof nexusHdrs==='function')?nexusHdrs({'Content-Type':'application/json'}):{'Content-Type':'application/json'},
+      body:JSON.stringify(payload)});
+  }
+  const key=FIN.data.settings&&FIN.data.settings.aiKey;
+  if(!key)return Promise.reject(new Error('Aucun serveur NEXUS ni clé Claude configuré (⚙ Paramètres).'));
+  return fetch('https://api.anthropic.com/v1/messages',{method:'POST',signal:opts.signal,
+    headers:claudeHeaders(key),body:JSON.stringify(payload)});
+}
 function claudeHeaders(key){
   const h={'Content-Type':'application/json','anthropic-version':'2023-06-01',
            'anthropic-dangerous-direct-browser-access':'true',
@@ -2264,7 +2297,83 @@ function claudeText(data){
   return b?b.text:'';
 }
 const SUGGS=['Analysez mon portefeuille complet','Quel est mon taux d\'épargne ?','Quand exécuter mes prochains DCA ?','Résumez mes finances','Quels actifs sont en perte ?','Optimisez mon budget'];
-function renderAI(){const msgs=document.getElementById('chat-msgs'),suggs=document.getElementById('chat-suggs');if(!UI.chatMsgs.length){msgs.innerHTML='<div class="cmsg"><div class="cav ai">N</div><div class="cbub"><strong>Bonjour ! Je suis NEXUS IA.</strong><br>J\'ai accès complet à vos données. Configurez votre clé Claude dans <strong>Paramètres</strong> pour des analyses approfondies.</div></div>';suggs.innerHTML=SUGGS.map((s,i)=>`<button type="button" class="sugg" onclick="insertSugg(${i})">${esc(s)}</button>`).join('');}else{renderChatMsgs();suggs.innerHTML='';}}
+/* ---------- Agents d'optimisation (moteur côté serveur) ---------- */
+function agentBusy(b){document.querySelectorAll('#agents-panel button').forEach(x=>{x.disabled=b;});}
+async function runAgents(which){
+  const out=document.getElementById('agents-out');if(!out)return;
+  const srv=aiServer();
+  if(!srv){out.innerHTML='<div style="font-size:12px;color:var(--warn)">Les agents tournent côté serveur. Configure le serveur NEXUS dans ⚙ Paramètres.</div>';return;}
+  agentBusy(true);
+  out.innerHTML='<div style="display:flex;align-items:center;gap:8px;color:var(--t2);font-size:13px"><div class="typing"><span></span><span></span><span></span></div> Analyse en cours… (10–40 s selon le nombre d\'agents)</div>';
+  try{
+    const r=await fetch(srv+'/agents',{method:'POST',headers:(typeof nexusHdrs==='function')?nexusHdrs({'Content-Type':'application/json'}):{'Content-Type':'application/json'},signal:AbortSignal.timeout(180000),body:JSON.stringify({agent:which})});
+    const d=await r.json();
+    if(!r.ok||!d.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
+    renderAgentCards(d);
+  }catch(e){out.innerHTML='<div style="font-size:12px;color:var(--err)">Erreur agents : '+esc(e.message)+'</div>';}
+  finally{agentBusy(false);}
+}
+function _prioTag(p){const m={haute:['🔴','Priorité haute'],moyenne:['🟠','Priorité moyenne'],basse:['🟢','Priorité basse']};const x=m[(p||'').toLowerCase()]||['•','Priorité'];return `<span style="font-size:10px;color:var(--t2)">${x[0]} ${x[1]}</span>`;}
+/* Une action IA est applicable si elle a un type connu et les champs requis. */
+function _actValid(a){if(!a||typeof a!=='object')return false;const t=(a.type||'').toLowerCase();
+  if(t==='budget')return !!(a.categorie||a.cat)&&+(a.montant||0)>0;
+  if(t==='objectif')return !!(a.nom||a.name)&&+(a.cible||a.target||0)>0;
+  if(t==='dca')return !!(a.actif||a.asset)&&+(a.montant||0)>0;
+  return false;}
+function catIdByName(name){const c=(FIN.data.categories||[]).find(c=>c.t==='exp'&&(c.n||'').toLowerCase()===(name||'').toLowerCase());return c?c.id:'c10';}
+/* Applique concrètement une action proposée (budget / objectif / DCA) dans l'app. */
+function applyAgentAction(a){
+  if(!a||!a.type)return{ok:false,msg:'Action vide'};
+  const t=(a.type||'').toLowerCase();
+  try{
+    if(t==='budget'){const catId=catIdByName(a.categorie||a.cat);const amt=Math.round(+(a.montant||0));if(amt<=0)return{ok:false,msg:'Montant invalide'};
+      FIN.data.budgets=FIN.data.budgets||[];const ex=FIN.data.budgets.find(b=>b.catId===catId);
+      if(ex)ex.amount=amt;else FIN.data.budgets.push({id:uid(),n:getCat(catId).n,catId,amount:amt});
+      finSave();if(UI.view==='budgets'&&typeof renderBudgets==='function')renderBudgets();
+      return{ok:true,msg:'Budget '+getCat(catId).n+' réglé à '+fmtM(amt)};}
+    if(t==='objectif'){const nom=(a.nom||a.name||'Objectif').slice(0,60);const tgt=Math.round(+(a.cible||a.target||0));if(tgt<=0)return{ok:false,msg:'Cible invalide'};
+      FIN.data.goals=FIN.data.goals||[];FIN.data.goals.push({id:uid(),n:nom,ic:'🎯',target:tgt,current:0,deadline:a.echeance||a.deadline||''});
+      finSave();if(UI.view==='budgets'&&typeof renderBudgets==='function')renderBudgets();
+      return{ok:true,msg:'Objectif « '+nom+' » créé ('+fmtM(tgt)+')'};}
+    if(t==='dca'){const asset=(a.actif||a.asset||'').toUpperCase();const amt=Math.round(+(a.montant||0));if(!asset||amt<=0)return{ok:false,msg:'DCA invalide'};
+      if(typeof TARGET!=='undefined'&&!TARGET[asset])return{ok:false,msg:asset+' indisponible dans les actifs'};
+      if(typeof INV==='undefined')return{ok:false,msg:'Module invest indisponible'};
+      INV.dcas=INV.dcas||[];INV.dcas.push({id:uid(),asset,amount:amt,freq:(a.frequence||a.freq||'Mensuel'),nextDate:today(),note:'Proposé par NEXUS IA',auto:false,createdAt:today()});
+      invSave();if(UI.view==='dca'&&typeof renderDCA==='function')renderDCA();
+      return{ok:true,msg:'DCA '+asset+' '+fmtM(amt)+' programmé'};}
+  }catch(e){return{ok:false,msg:e.message};}
+  return{ok:false,msg:'Type inconnu'};
+}
+function applyAgentActionIdx(i){const a=window._agentActions&&window._agentActions[i];if(!a)return;const r=applyAgentAction(a);toast((r.ok?'✅ ':'⚠️ ')+r.msg,r.ok?'ok':'err');const btn=document.getElementById('agact-'+i);if(btn&&r.ok){btn.textContent='✓ Appliqué';btn.disabled=true;btn.style.opacity=.6;}}
+function _recCard(r){
+  let actBtn='';
+  if(_actValid(r.action)){window._agentActions=window._agentActions||[];const i=window._agentActions.push(r.action)-1;actBtn=`<div style="margin-top:8px"><button id="agact-${i}" class="btn btn-ok btn-sm" onclick="applyAgentActionIdx(${i})">⚡ Appliquer</button></div>`;}
+  return `<div style="border:1px solid var(--border);border-radius:10px;padding:10px;margin-top:8px">
+  <div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline"><strong style="font-size:13px">${esc(r.titre||'')}</strong>${_prioTag(r.priorite)}</div>
+  <div style="font-size:12px;color:var(--t1);margin-top:4px">${esc(r.detail||'')}</div>
+  ${(r.impact&&r.impact!=='n/d')?`<div style="font-size:11px;color:var(--ok);margin-top:5px;font-family:var(--fm)">💡 Impact estimé : ${esc(r.impact)}</div>`:''}
+  ${actBtn}
+</div>`;}
+function renderAgentCards(d){
+  const out=document.getElementById('agents-out');if(!out)return;let h='';window._agentActions=[];
+  const syn=d.synthese;
+  if(syn&&(syn.resume||(syn.recommandations||[]).length)){
+    h+=`<div style="border:1px solid var(--gl);border-radius:12px;padding:12px;margin-bottom:10px;background:rgba(201,162,39,.06)">
+      <div style="font-weight:800;color:var(--gl);font-family:var(--fn)">⚡ Plan d'action prioritaire</div>
+      <div style="font-size:12px;color:var(--t1);margin-top:4px">${esc(syn.resume||'')}</div>
+      ${(syn.recommandations||[]).map(_recCard).join('')}</div>`;
+  }
+  (d.agents||[]).forEach(a=>{
+    if(a.error){h+=`<div style="font-size:12px;color:var(--err);margin-bottom:8px">${esc(a.emoji||'')} ${esc(a.name||a.key||'')} : ${esc(a.error)}</div>`;return;}
+    const sc=(typeof a.score==='number')?` · score ${a.score}/100`:'';
+    h+=`<div style="border:1px solid var(--border);border-radius:12px;padding:12px;margin-bottom:10px">
+      <div style="font-weight:800;font-family:var(--fn)">${esc(a.emoji||'')} ${esc(a.name||'')}<span style="font-size:11px;color:var(--t2);font-weight:400">${sc}</span></div>
+      ${a.resume?`<div style="font-size:12px;color:var(--t1);margin-top:4px">${esc(a.resume)}</div>`:''}
+      ${(a.recommandations||[]).map(_recCard).join('')}</div>`;
+  });
+  out.innerHTML=h||'<div style="font-size:12px;color:var(--t2)">Aucune recommandation.</div>';
+}
+function renderAI(){const msgs=document.getElementById('chat-msgs'),suggs=document.getElementById('chat-suggs');if(!UI.chatMsgs.length){msgs.innerHTML='<div class="cmsg"><div class="cav ai">N</div><div class="cbub"><strong>Bonjour ! Je suis NEXUS IA.</strong><br>J\'ai accès complet à vos données. L\'IA passe par votre <strong>serveur NEXUS</strong> (clé sécurisée côté serveur). Lancez un <strong>agent d\'optimisation</strong> ci-dessus, ou posez-moi une question.</div></div>';suggs.innerHTML=SUGGS.map((s,i)=>`<button type="button" class="sugg" onclick="insertSugg(${i})">${esc(s)}</button>`).join('');}else{renderChatMsgs();suggs.innerHTML='';}}
 /* La réponse du modèle était insérée en innerHTML sans échappement : un libellé
    ou une note recopiés depuis les données pouvaient contenir du HTML et s'exécuter.
    On échappe d'abord, on applique le gras ensuite. */
@@ -2292,9 +2401,8 @@ function chatBtn(){if(UI.chatBusy)stopChat();else sendChat();}
 async function sendChat(){
   if(UI.chatBusy)return;
   const ta=document.getElementById('chat-ta');const msg=(ta?.value||'').trim();if(!msg)return;
-  const key=FIN.data.settings.aiKey;
-  // Sans clé l'API renvoyait un 401 opaque ; on oriente directement vers le réglage.
-  if(!key){toast('Clé Claude manquante — renseignez-la dans Paramètres','err');return;}
+  // L'IA passe par le serveur NEXUS (clé côté serveur). Repli local si pas de serveur.
+  if(!aiReady()){toast('IA non disponible : configure le serveur NEXUS (⚙ Paramètres) ou ajoute une clé.','err');return;}
   if(ta){ta.value='';ta.style.height='44px';}
   UI.chatMsgs.push({role:'user',content:msg});
   const suggs=document.getElementById('chat-suggs');if(suggs)suggs.innerHTML='';
@@ -2312,7 +2420,7 @@ async function sendChat(){
   let idleT=0;const idle=()=>{clearTimeout(idleT);idleT=setTimeout(()=>{UI.chatTimedOut=true;ctrl.abort();},90000);};
   try{
     idle();
-    const resp=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',signal:ctrl.signal,headers:claudeHeaders(key),body:JSON.stringify({model:CLAUDE_MODEL,max_tokens:8000,stream:true,fallbacks:'default',system:chatCtx(),messages:UI.chatMsgs.map(m=>({role:m.role,content:m.content}))})});
+    const resp=await aiCall({model:CLAUDE_MODEL,max_tokens:8000,stream:true,fallbacks:'default',system:chatCtx(),messages:UI.chatMsgs.map(m=>({role:m.role,content:m.content}))},{signal:ctrl.signal});
     if(!resp.ok||!resp.body){
       let m='HTTP '+resp.status;
       try{m=(await resp.json()).error?.message||m;}catch(e){console.warn('Chat : corps d\'erreur illisible',e);}
@@ -2646,7 +2754,23 @@ function afTargetVal(){const t=+(FIN.data.settings.afTarget||0);return t>0?t:Mat
 function blendedYield(){const tot=(typeof getHoldingTotal==='function')?getHoldingTotal():0;return tot>0?(passiveMonthly()*12/tot):0;}
 function setAfTarget(){const v=prompt('Tes DÉPENSES mensuelles réelles à couvrir (FCFA) pour viser l\'auto-financement :',FIN.data.settings.afTarget||'');if(v===null)return;FIN.data.settings.afTarget=parseFloat(String(v).replace(/[^0-9.,]/g,'').replace(',','.'))||0;finSave();renderRevenus();toast('Objectif de dépenses enregistré','ok');}
 function bizSummary(){const tx=FIN.data.transactions||[];const ci=tx.filter(t=>t.type==='inc').reduce((s,t)=>s+convertAmt(t.amount,t.cur||cur(),cur()),0);const ce=tx.filter(t=>t.type==='exp').reduce((s,t)=>s+convertAmt(t.amount,t.cur||cur(),cur()),0);const mrr=recMonthlyByType('inc');return {revM:Math.round(getMonthInc(thisMonth())),expM:Math.round(getMonthExp(thisMonth())),netM:Math.round(getMonthInc(thisMonth())-getMonthExp(thisMonth())),mrr:Math.round(mrr),arr:Math.round(mrr*12),caTotal:Math.round(ci),depTotal:Math.round(ce),cur:cur(),ts:Date.now()};}
-function nexusBizPush(){try{const srv=(typeof nexusSrv==='function')?nexusSrv():'';if(!srv)return;fetch(srv+'/state',{method:'POST',headers:nexusHdrs({'Content-Type':'application/json'}),signal:AbortSignal.timeout(10000),body:JSON.stringify({business:bizSummary()})}).then(()=>{},e=>console.warn('nexusBizPush',e));}catch(e){}}
+/* Résumé des budgets / objectifs / dettes / DCA pour l'agent Objectifs (serveur). */
+function objectifsSummary(){
+  const C=cur();
+  const budgets=(FIN.data.budgets||[]).map(b=>({cat:(getCat(b.catId).n||''),limit:Math.round(b.amount||0),spent:Math.round(getBudSpent(b))}));
+  const goals=(FIN.data.goals||[]).map(g=>({name:g.n||'',current:Math.round(g.current||0),target:Math.round(g.target||0),deadline:g.deadline||''}));
+  const debts=(FIN.data.debts||[]).map(d=>({name:d.name||'',balance:Math.round(d.amount||0),original:Math.round(d.original||0),due:d.dueDate||''}));
+  const dcas=((typeof INV!=='undefined'&&INV.dcas)||[]).map(d=>({asset:d.asset||'',amount:Math.round(d.amount||0),freq:d.freq||'',next:d.nextDate||'',auto:!!d.auto}));
+  return {cur:C,budgets,goals,debts,dcas,ts:Date.now()};
+}
+/* Dépenses du mois par catégorie (nom -> montant) : mémoire des agents. */
+function catExpSummary(){
+  const C=cur(),m={};
+  (FIN.data.transactions||[]).filter(t=>t.type==='exp'&&monthKey(t.date)===thisMonth()).forEach(t=>{const nm=getCat(t.catId).n||'Autres';m[nm]=(m[nm]||0)+convertAmt(t.amount,t.cur||C,C);});
+  const out={};Object.entries(m).sort((a,b)=>b[1]-a[1]).slice(0,20).forEach(([k,v])=>out[k]=Math.round(v));
+  return out;
+}
+function nexusBizPush(){try{const srv=(typeof nexusSrv==='function')?nexusSrv():'';if(!srv)return;fetch(srv+'/state',{method:'POST',headers:nexusHdrs({'Content-Type':'application/json'}),signal:AbortSignal.timeout(10000),body:JSON.stringify({business:bizSummary(),objectifs:objectifsSummary(),catExp:catExpSummary()})}).then(()=>{},e=>console.warn('nexusBizPush',e));}catch(e){}}
 function revInvestForMonth(mk){let v=0;(typeof bgActivityItems==='function'?bgActivityItems():[]).forEach(it=>{if(it.kind==='buy'){const m=new Date(it.ts).toISOString().slice(0,7);if(m===mk)v+=convertAmt(it.val||0,'USD',cur());}});const a=(typeof nsiaAccount==='function')?nsiaAccount():null;((a&&a.nsiaOps)||[]).forEach(o=>{if(o.sens==='inc'&&monthKey(o.date)===mk)v+=convertAmt(o.montant||0,'XOF',cur());});return v;}
 function lastNDays(n){const a=[];const base=new Date();base.setHours(0,0,0,0);for(let i=n-1;i>=0;i--){a.push(new Date(base.getTime()-i*86400000).toISOString().slice(0,10));}return a;}
 function ddmm(d){return d.slice(8)+'/'+d.slice(5,7);}
@@ -3369,6 +3493,11 @@ function nexusCloudPull(verbose){const srv=nexusSrv();if(!srv)return;const tok=n
     if(d.balances){try{Object.keys(d.balances).forEach(function(k){var a=(k==='moov')?ensureMoovSetup():(k==='mtn'?ensureMomoSetup():null);if(a&&!FIN.data.transactions.some(function(t){return t.accId===a.id;})){a.bal=d.balances[k];added++;}});finSave();}catch(e){}}
     if(added){finSave();localStorage.setItem('nexus_srv_since',String(maxTs));if(typeof updSbWealth==='function')updSbWealth();if(UI.view==='transactions'&&typeof renderTxs==='function')renderTxs();if(UI.view==='holding')renderHolding();toast('💸 '+added+' opération(s) MoMo importée(s) via Discord','ok');}
     else if(verbose)toast('Serveur connecté ✓','ok');
+    // Actions IA approuvées sur Discord -> on les applique ici, puis on accuse réception.
+    if(Array.isArray(d.aiActions)&&d.aiActions.length&&typeof applyAgentAction==='function'){
+      var done=[];d.aiActions.forEach(function(a){try{var r=applyAgentAction(a);if(r.ok){done.push(a.id);toast('🤖 '+r.msg+' (via Discord)','ok');}}catch(e){}});
+      if(done.length){try{fetch(srv+'/state',{method:'POST',headers:nexusHdrs({'Content-Type':'application/json'}),signal:AbortSignal.timeout(10000),body:JSON.stringify({ackActions:done})}).catch(function(){});}catch(e){}}
+    }
   }).catch(function(e){if(verbose)toast('Serveur injoignable: '+e.message,'err');});
 }
 function nexusBgInstall(){if(typeof bgFetch!=='function'||bgFetch.__srv)return;var _bg=bgFetch;bgFetch=async function(path,params){var srv=nexusSrv();if(srv){var usp=new URLSearchParams(params||{});var qs=usp.toString();var url=srv+'/bitget'+path+(qs?'?'+qs:'');var r=await fetch(url,{headers:nexusHdrs(),signal:AbortSignal.timeout(15000)});if(!r.ok)throw new Error('Serveur HTTP '+r.status);var d=await r.json();if(d.code==='00000')return d;throw new Error('Bitget: '+((d&&d.msg)||'Erreur')+' ['+((d&&d.code)||'?')+']');}return _bg.apply(this,arguments);};bgFetch.__srv=true;}

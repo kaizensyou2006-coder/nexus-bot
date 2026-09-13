@@ -35,6 +35,9 @@ Liste complète : voir [`.env.example`](.env.example).
 | `AUTH_TOKEN` | **Obligatoire**, 16+ caractères aléatoires |
 | `BITGET_KEY` / `BITGET_SECRET` / `BITGET_PASS` | API Bitget (proxy signé, lecture seule) |
 | `OCR_API_KEY` | Lecture des captures MoMo |
+| `ANTHROPIC_API_KEY` | **IA & agents** — clé Claude, gardée côté serveur (proxy `/ai`) |
+| `AI_MODEL` / `AI_EFFORT` | Modèle (`claude-opus-5`) et profondeur (`high`) — optionnels |
+| `AI_BRIEF_AUTO` / `AI_BRIEF_HOUR` / `AI_BRIEF_EVERY_DAYS` | Brief d'optimisations auto sur Discord |
 | `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | Persistance de l'état |
 
 ---
@@ -44,7 +47,8 @@ Liste complète : voir [`.env.example`](.env.example).
 | Surface | Règle |
 |---|---|
 | `GET /` (l'app) | Exige le jeton. Sans lui : page de connexion, `401`. Le jeton n'est injecté dans la page **qu'après** authentification, puis déposé dans un cookie `HttpOnly` (90 j). |
-| `/state`, `/momo`, `/bgcalib`, `/bitget/*` | Jeton requis, comparaison à temps constant. Accepté via `Authorization: Bearer`, `x-auth`, cookie, ou `?token=` (compat). |
+| `/state`, `/momo`, `/bgcalib`, `/bitget/*`, `/ai`, `/agents` | Jeton requis, comparaison à temps constant. Accepté via `Authorization: Bearer`, `x-auth`, cookie, ou `?token=` (compat). |
+| `/ai` | Proxy Claude. La clé `ANTHROPIC_API_KEY` reste **côté serveur** — l'app ne l'a plus. Le modèle et `max_tokens` sont plafonnés côté serveur (liste blanche). |
 | `/bitget/*` | **Lecture seule.** Seuls les chemins de consultation de solde et de prix passent ; `place-order`, `withdrawal`, etc. renvoient `403`. `BITGET_ALLOW_WRITE=1` lève la restriction — à n'activer que sciemment. |
 | Toutes les routes | `120` requêtes/min/IP (`RATE_MAX_REQ`), puis `429`. Après `AUTH_MAX_FAIL` jetons invalides, l'IP est bloquée `AUTH_BLOCK_SEC` secondes. |
 | CORS | Restreint à `PUBLIC_URL` (plus de repli sur `*`). |
@@ -83,6 +87,25 @@ pinger elle-même.
 Pour un vrai 24/7 sans latence, passer l'instance en payant (~7 $/mois).
 
 ---
+
+## IA & Agents d'optimisation
+
+L'app appelle Claude **uniquement via le serveur** (route `/ai`). Avant, la clé
+`sk-ant-…` vivait dans le navigateur (localStorage + en-tête `dangerous-direct-browser-access`) :
+une XSS, une extension ou un accès à l'appareil l'exfiltrait, et elle facture le
+compte Anthropic sans plafond. Désormais la clé est une variable serveur.
+
+- **Assistant IA** (onglet ✨) : chat en streaming, passe par `/ai`.
+- **4 agents** (`/agents`) : `patrimoine`, `depenses`, `epargne`, `invest`, chacun rend
+  des recommandations chiffrées et priorisées, plus une **synthèse** (plan d'action).
+  - Dans l'app : boutons « Agents d'optimisation » en haut de l'onglet ✨.
+  - Sur Discord : `/optim` (ou `/optim invest`) et le bouton **🧠 Optimisations IA** du panneau.
+- **Brief automatique** : à `AI_BRIEF_HOUR` (heure Bénin), tous les `AI_BRIEF_EVERY_DAYS` jours,
+  le plan d'action est posté dans le salon des rapports. Désactiver avec `AI_BRIEF_AUTO=0`.
+
+> Sans `ANTHROPIC_API_KEY`, l'IA se désactive proprement (503 côté API, message clair
+> côté app et Discord) — le reste du serveur fonctionne normalement.
+> Les agents **informent** ; ils ne passent aucun ordre et ne conseillent aucun produit nominal.
 
 ## 5. Lancement local
 
