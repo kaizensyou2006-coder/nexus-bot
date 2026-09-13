@@ -3593,8 +3593,15 @@ if discord is not None:
         emb.add_field(name="📊 Rapports", value=(
             "📊 **Rapport complet** · 📅 **7 j** · 🗓️ **14 j** · 📆 **30 j** · 📊 **90 j**\n"
             "📄 **PDF 30 j** · 🗒️ **PDF 7 j** · 📉 **Historique** (graphe + projection 12M)"), inline=False)
+        _ia = "OK" if (ANTHROPIC_API_KEY or ai_enabled()) else "à configurer"
+        emb.add_field(name="🧠 Intelligence — agents IA (%s)" % _ia, value=(
+            "🧠 **Optimisations IA** (bouton) ou `/optim` — plan d'action des **5 agents** "
+            "(patrimoine · dépenses · épargne · investissement · objectifs) + synthèse.\n"
+            "🪙 `/crypto` — **division crypto** : contrôle d'**exactitude des données Bitget** "
+            "+ agents dédiés (allocation, DCA, performance, analyse par actif).\n"
+            "_Analyse non contractuelle — les agents informent, ne passent aucun ordre._"), inline=False)
         emb.add_field(name="⚙️ Contrôle & maintenance", value=(
-            "✨ **Tout actualiser** · 🔄 **Synchroniser** · 🔁 **Rafraîchir panneau**\n"
+            "✨ **Tout actualiser** · 🔄 **Synchroniser** · 🔁 **Rafraîchir panneau** · 🧠 **Optimisations IA**\n"
             "🧹 **Nettoyer doublons** · ⚙️ **État serveur** · ♻️ **Re-scan** · 🧨 **RESET**\n"
             "🔎 **Recherche** · 🔗 **Lien** · 🌐 **Ouvrir l'app** · ❓ **Aide**"), inline=False)
         emb.add_field(name="📥 Automatique (zéro effort)", value=(
