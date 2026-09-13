@@ -230,6 +230,18 @@ class TestAuth(unittest.TestCase):
             N.AUTH_TOKEN = old
 
 
+class TestPanneauDiscord(unittest.TestCase):
+    """Discord limite chaque rangée d'un View à 5 boutons. Un 6e -> ValueError au
+    démarrage, qui bloquait on_ready (panneau + tâches de fond). Garde-fou statique."""
+
+    def test_max_5_boutons_par_rangee(self):
+        import re, collections
+        src = open(N.__file__, encoding="utf-8").read()
+        counts = collections.Counter(re.findall(r"row=(\d)", src))
+        for row, n in sorted(counts.items()):
+            self.assertLessEqual(n, 5, "rangée %s du panneau : %d boutons (max 5)" % (row, n))
+
+
 class TestProxyBitget(unittest.TestCase):
     def test_chemins_de_lecture_uniquement(self):
         self.assertIn("/api/v2/account/all-account-balance", N.BITGET_READ_PATHS)

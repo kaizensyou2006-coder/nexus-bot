@@ -3188,7 +3188,7 @@ if discord is not None:
             await interaction.response.send_message(embed=build_status_embed(), ephemeral=True)
 
         @discord.ui.button(label="Optimisations IA", emoji="🧠",
-                           style=discord.ButtonStyle.primary, custom_id="nexus:optim", row=1)
+                           style=discord.ButtonStyle.primary, custom_id="nexus:optim", row=4)
         async def b_optim(self, interaction, button):
             if not ai_enabled():
                 await interaction.response.send_message(
@@ -3696,7 +3696,13 @@ async def run_discord(http_session):
                 await tree.sync()
         except Exception as e:
             log.error("discord: synchronisation des slash-commands: %s", e)
-        await post_or_update_panel(client)
+        # Le panneau ne doit JAMAIS bloquer le démarrage des tâches de fond : une erreur
+        # de construction de la vue (ex. trop de boutons) laissait le bot sans brief auto
+        # ni historique. On isole l'échec.
+        try:
+            await post_or_update_panel(client)
+        except Exception as e:
+            log.error("post_or_update_panel: %s", e)
         # Démarre le planificateur de récaps auto (une seule fois, même après reconnexion)
         if not getattr(client, "_recap_started", False):
             client._recap_started = True
