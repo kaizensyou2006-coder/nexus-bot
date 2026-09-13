@@ -2093,9 +2093,43 @@ async def _openai_proxy(request, body, session):
     return resp
 
 
+def _scan_balanced_json(t):
+    """Renvoie le 1er objet JSON EQUILIBRE et parseable trouve dans `t`, en scannant
+    depuis chaque '{' (en respectant les chaines). Rattrape les sorties malformees
+    frequentes des modeles : accolade dupliquee en tete ('{ { ... }'), texte autour,
+    accolade parasite. Renvoie None si rien de parseable."""
+    start = t.find("{")
+    while start != -1:
+        depth = 0
+        instr = False
+        esc = False
+        for i in range(start, len(t)):
+            ch = t[i]
+            if instr:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    instr = False
+            else:
+                if ch == '"':
+                    instr = True
+                elif ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            return json.loads(t[start:i + 1])
+                        except Exception:
+                            break            # ce '{' ne donne pas un objet valide -> suivant
+        start = t.find("{", start + 1)
+    return None
+
 def _parse_agent_json(text):
     """Extrait l'objet JSON d'une reponse d'agent, defensivement (le modele peut
-    parfois entourer le JSON de texte ou d'un bloc de code)."""
+    entourer le JSON de texte, d'un bloc de code, ou dupliquer une accolade)."""
     t = (text or "").strip()
     if t.startswith("```"):
         t = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", t).strip()
@@ -2103,12 +2137,9 @@ def _parse_agent_json(text):
         return json.loads(t)
     except Exception:
         pass
-    m = re.search(r"\{.*\}", t, re.S)      # premier objet {...}
-    if m:
-        try:
-            return json.loads(m.group(0))
-        except Exception:
-            pass
+    obj = _scan_balanced_json(t)
+    if isinstance(obj, dict):
+        return obj
     return {"score": None, "resume": t[:400], "recommandations": []}
 
 
@@ -2160,8 +2191,28 @@ async def run_all_agents(session, question=""):
                                         "Recommandations des agents :\n" + "\n".join(digest)
                                         + "\n\nSituation :\n" + snap, max_tokens=2000)
             synth = _parse_agent_json(txt)
+            if isinstance(synth, dict):
+                # certains modeles renvoient la cle anglaise 'recommendations'
+                synth["recommandations"] = (synth.get("recommandations")
+                                            or synth.get("recommendations") or [])[:5]
         except Exception as e:
             log.warning("synthese agents: %s", e)
+    # Filet : si la synthese est vide, on la reconstruit a partir des recommandations
+    # 'haute' priorite des agents (le brief a toujours un plan d'action).
+    if not (synth and synth.get("recommandations")):
+        top = []
+        for a in agents:
+            for r in (a.get("recommandations") or []):
+                if (r.get("priorite") or "").lower() == "haute":
+                    top.append(r)
+        if not top:                       # sinon, les premieres de chaque agent
+            for a in agents:
+                if a.get("recommandations"):
+                    top.append(a["recommandations"][0])
+        if top:
+            synth = {"score": None,
+                     "resume": "Actions prioritaires consolidées à partir des agents.",
+                     "recommandations": top[:5]}
     try:
         record_ai_snapshot()     # memoire : ce brief devient le point de comparaison suivant
     except Exception as e:

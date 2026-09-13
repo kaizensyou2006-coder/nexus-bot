@@ -342,6 +342,17 @@ class TestFournisseurIA(unittest.TestCase):
         finally:
             N.AI_BASE_URL = old
 
+    def test_parse_json_accolade_dupliquee(self):
+        # Sortie malformee constatee sur un modele gratuit : '{' en double au debut.
+        brut = '{\n{\n  "score": 82, "resume": "ok", "recommandations": [{"titre": "T"}]}'
+        obj = N._parse_agent_json(brut)
+        self.assertEqual(obj.get("score"), 82)
+        self.assertEqual(obj["recommandations"][0]["titre"], "T")
+
+    def test_parse_json_avec_texte_autour(self):
+        obj = N._parse_agent_json('Voici le JSON : {"score": 5, "recommandations": []} merci')
+        self.assertEqual(obj.get("score"), 5)
+
     def test_flatten_content(self):
         self.assertEqual(N._flatten_content("bonjour"), "bonjour")
         self.assertEqual(N._flatten_content([{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]), "ab")
