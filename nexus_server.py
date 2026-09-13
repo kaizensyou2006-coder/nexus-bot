@@ -2006,9 +2006,11 @@ def _openai_headers(key=None):
     return h
 
 def _ai_providers():
-    """Liste des fournisseurs à essayer, dans l'ordre : principal puis secours."""
+    """Liste des fournisseurs à essayer, dans l'ordre : principal puis secours.
+    Le secours n'est ajouté que s'il est complet (base + modèle + clé, ou base locale) :
+    ainsi renseigner base/modèle sans la clé ne déclenche PAS d'appel 401 inutile."""
     provs = [{"url": _url_of(AI_BASE_URL), "key": AI_API_KEY, "model": AI_MODEL, "name": "principal"}]
-    if AI_BASE_URL2 and AI_MODEL2:
+    if AI_BASE_URL2 and AI_MODEL2 and (AI_API_KEY2 or "localhost" in AI_BASE_URL2 or "127.0.0.1" in AI_BASE_URL2):
         provs.append({"url": _url_of(AI_BASE_URL2), "key": AI_API_KEY2, "model": AI_MODEL2, "name": "secours"})
     return provs
 
