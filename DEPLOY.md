@@ -118,7 +118,7 @@ AI_MODEL=deepseek-chat
 ```
 
 Exemple 100 % gratuit (OpenRouter) : `AI_BASE_URL=https://openrouter.ai/api/v1`,
-`AI_MODEL=deepseek/deepseek-chat-v3.1:free`.
+`AI_MODEL=nvidia/nemotron-3-super-120b-a12b:free`.
 
 - **Assistant IA** (onglet ✨) : chat en streaming, passe par `/ai`.
 - **4 agents** (`/agents`) : `patrimoine`, `depenses`, `epargne`, `invest`, chacun rend
