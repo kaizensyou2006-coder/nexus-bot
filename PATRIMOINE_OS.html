@@ -998,7 +998,7 @@ textarea.cinp::placeholder{color:var(--t3);}
         </div>
       </div>
       <div style="display:flex;gap:7px;flex-wrap:wrap">
-        <button class="btn btn-gold btn-sm" onclick="runAgents('all')">⚡ Brief finances</button>
+        <button class="btn btn-gold btn-sm" onclick="runAgents('grand')" title="Les 15 agents + ton profil financier + plan global (2–4 min)">🎯 Grand Brief (15 agents)</button>
         <button class="btn btn-ghost btn-sm" onclick="clearChat()">🗑 Effacer chat</button>
       </div>
     </div>
@@ -2354,10 +2354,11 @@ async function runAgents(which){
   const out=document.getElementById(outId);if(!out)return;
   const srv=aiServer();
   if(!srv){out.innerHTML='<div style="font-size:12px;color:var(--warn)">Les agents tournent côté serveur. Configure le serveur NEXUS dans ⚙ Paramètres.</div>';return;}
+  const isGrand=(which==='grand');
   agentBusy(panel,true);
-  out.innerHTML='<div style="display:flex;align-items:center;gap:8px;color:var(--t2);font-size:13px"><div class="typing"><span></span><span></span><span></span></div> Analyse en cours… (10–60 s selon le nombre d\'agents)</div>';
+  out.innerHTML='<div style="display:flex;align-items:center;gap:8px;color:var(--t2);font-size:13px"><div class="typing"><span></span><span></span><span></span></div> '+(isGrand?'Grand Brief en cours — les 15 agents + ton profil (2–4 min)…':'Analyse en cours… (10–60 s selon le nombre d\'agents)')+'</div>';
   try{
-    const r=await fetch(srv+'/agents',{method:'POST',headers:(typeof nexusHdrs==='function')?nexusHdrs({'Content-Type':'application/json'}):{'Content-Type':'application/json'},signal:AbortSignal.timeout(180000),body:JSON.stringify({agent:which})});
+    const r=await fetch(srv+'/agents',{method:'POST',headers:(typeof nexusHdrs==='function')?nexusHdrs({'Content-Type':'application/json'}):{'Content-Type':'application/json'},signal:AbortSignal.timeout(isGrand?360000:180000),body:JSON.stringify({agent:which})});
     const d=await r.json();
     if(!r.ok||!d.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
     renderAgentCards(d,outId);
@@ -2416,6 +2417,9 @@ function _recCard(r){
 </div>`;}
 function renderAgentCards(d,outId){
   const out=document.getElementById(outId||'agents-out');if(!out)return;let h='';window._agentActions=[];
+  if(d.profil){h+=`<div style="border:1px solid var(--gl);border-radius:14px;padding:14px 16px;margin-bottom:10px;background:linear-gradient(135deg,rgba(201,162,39,.12),rgba(15,15,27,.5))">
+    <div style="display:flex;align-items:center;gap:8px;font-weight:800;font-family:var(--fn);color:var(--gl)"><span style="font-size:17px">👤</span> Ton profil financier</div>
+    <div style="font-size:12.5px;color:var(--t1);line-height:1.6;margin-top:6px">${esc(d.profil)}</div></div>`;}
   if(d.reconcile)h+=_reconcileBlock(d.reconcile,d.reconcile_ok);
   const syn=d.synthese;
   if(syn&&(syn.resume||(syn.recommandations||[]).length)){

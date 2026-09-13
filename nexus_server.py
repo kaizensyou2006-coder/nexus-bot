@@ -2457,6 +2457,69 @@ async def run_business_division(session, question=""):
     return {"ok": True, "agents": agents, "synthese": synth, "ts": int(time.time())}
 
 
+# ========================================================================
+# GRAND BRIEF — le Stratège en chef fait travailler les 3 divisions en cascade
+# (comprendre l'utilisateur : classer, analyser, profiler, préparer)
+# ========================================================================
+async def run_grand_brief(session, question=""):
+    """Exécute les 3 divisions (15 agents), puis un STRATÈGE EN CHEF qui les consolide en
+    un PROFIL (comment fonctionne l'utilisateur : habitudes, choix, forces, risques, ce qu'il
+    faut préparer) + un plan d'action global. Divisions lancées en série (5 agents en //
+    à la fois) pour ménager les quotas du fournisseur."""
+    if not ai_enabled():
+        return {"ok": False, "error": "IA non configurée."}
+    fin = await run_all_agents(session, question)
+    biz = await run_business_division(session, question)
+    cry = None
+    if BITGET_KEY and BITGET_SECRET and BITGET_PASS:
+        try:
+            cry = await run_crypto_division(session, question)
+        except Exception as e:
+            log.warning("grand brief — crypto: %s", e)
+    all_agents = [a for d in (fin, cry, biz) if d and d.get("ok") for a in (d.get("agents") or [])]
+    digest = []
+    for d, name in ((fin, "Finance"), (cry, "Crypto"), (biz, "Business")):
+        if d and d.get("synthese"):
+            for r in (d["synthese"].get("recommandations") or []):
+                digest.append("[%s] %s — %s (impact %s, priorite %s)"
+                              % (name, r.get("titre", ""), r.get("detail", ""),
+                                 r.get("impact", "n/d"), r.get("priorite", "?")))
+    snap = finance_snapshot()
+    sys_chief = (
+        "Tu es le STRATÈGE EN CHEF de NEXUS, au-dessus des 3 divisions (Finance, Crypto, Business & Prévoyance). "
+        "On te donne la situation financière complète et les plans de chaque division. Ta mission : COMPRENDRE "
+        "l'utilisateur — classer ses dépenses par nature, déduire ses habitudes et ses choix, repérer ses forces "
+        "et ses risques, et dire ce qu'il faut PRÉPARER (anticiper les prochains mois). "
+        "Réponds UNIQUEMENT par un objet JSON de la forme : "
+        '{"profil":"<3 à 5 phrases : comment il fonctionne, ses habitudes et choix, ses forces, ses risques, '
+        'ce à quoi se préparer>", "score":<entier 0-100 = santé financière globale>, "resume":"<1 phrase>", '
+        '"recommandations":[{"titre":"","detail":"","impact":"","priorite":"haute|moyenne|basse","action":<null ou objet>}]}. '
+        "Le champ 'action' suit exactement ces formes : "
+        '{"type":"budget","categorie":"<nom>","montant":<FCFA/mois>} | '
+        '{"type":"objectif","nom":"<nom>","cible":<FCFA>,"echeance":"<AAAA-MM-JJ ou vide>"} | '
+        '{"type":"dca","actif":"<BTC|ETH...>","montant":<FCFA>,"frequence":"Hebdomadaire|Mensuel"} | null. '
+        "Donne 5 à 7 actions, tous domaines confondus, de la plus prioritaire à la moins. Français, montants en FCFA. "
+        "Tu informes, tu ne passes aucun ordre et ne conseilles aucun produit nominal.")
+    profil, synth = "", None
+    try:
+        txt = await _ai_text(session, sys_chief,
+                             "SITUATION COMPLÈTE :\n" + snap + "\n\nPLANS DES DIVISIONS :\n" + "\n".join(digest),
+                             max_tokens=2800)
+        obj = _parse_agent_json(txt)
+        profil = obj.get("profil") or ""
+        recs = obj.get("recommandations") or obj.get("recommendations") or []
+        if recs or obj.get("resume"):
+            synth = {"score": obj.get("score"), "resume": obj.get("resume") or "",
+                     "recommandations": recs[:7]}
+    except Exception as e:
+        log.warning("grand brief — chef: %s", e)
+    if not (synth and synth.get("recommandations")):
+        synth = await _synthesize(session, all_agents, snap)
+    return {"ok": True, "profil": profil, "agents": all_agents, "synthese": synth,
+            "reconcile": (cry or {}).get("reconcile"), "reconcile_ok": (cry or {}).get("reconcile_ok"),
+            "ts": int(time.time())}
+
+
 # ----------------------- Actions IA (proposees -> appliquees dans l'app) -----------------------
 _VALID_ACTION_TYPES = ("budget", "objectif", "dca")
 
@@ -2606,6 +2669,8 @@ async def h_agents(request):
     try:
         if which in ("all", "brief", "tout"):
             out = await run_all_agents(session, question)
+        elif which in ("grand", "grand-brief", "brief15", "profil", "tout15"):
+            out = await run_grand_brief(session, question)
         elif which in ("crypto", "division", "crypto-division"):
             out = await run_crypto_division(session, question)         # la division crypto complète
         elif which in ("bitget", "integrite", "exactitude", "verif"):
@@ -2968,6 +3033,10 @@ if discord is not None:
         head = discord.Embed(title="🧠 NEXUS — Plan d'optimisation",
                 description=(syn.get("resume") or "Actions prioritaires, tous agents confondus :"),
                 color=GOLD)
+        # Profil (Grand Brief) : la lecture du fonctionnement de l'utilisateur, en tête.
+        prof = data.get("profil")
+        if prof:
+            head.add_field(name="👤 Ton profil financier", value=str(prof)[:1020], inline=False)
         # Contrôle d'exactitude des données (déterministe) en tête, si fourni (division crypto).
         rec = data.get("reconcile")
         if rec:
@@ -3689,11 +3758,11 @@ if discord is not None:
             "📊 **Rapport complet** · 📅 **7 j** · 🗓️ **14 j** · 📆 **30 j** · 📊 **90 j**\n"
             "📄 **PDF 30 j** · 🗒️ **PDF 7 j** · 📉 **Historique** (graphe + projection 12M)"), inline=False)
         _ia = "OK" if (ANTHROPIC_API_KEY or ai_enabled()) else "à configurer"
-        emb.add_field(name="🧠 Intelligence — agents IA (%s)" % _ia, value=(
-            "🧠 **Optimisations IA** (bouton) ou `/optim` — plan d'action des **5 agents** "
-            "(patrimoine · dépenses · épargne · investissement · objectifs) + synthèse.\n"
-            "🪙 `/crypto` — **division crypto** : contrôle d'**exactitude des données Bitget** "
-            "+ agents dédiés (allocation, DCA, performance, analyse par actif).\n"
+        emb.add_field(name="🧠 Intelligence — 15 agents en 3 divisions (%s)" % _ia, value=(
+            "🎯 `/brief` — **GRAND BRIEF** : les 15 agents + ton **profil financier** + plan global.\n"
+            "🧠 `/optim` — **division finance** (patrimoine · dépenses · épargne · invest · objectifs).\n"
+            "🪙 `/crypto` — **division crypto** : contrôle d'**exactitude Bitget** + allocation, DCA, perf, par actif.\n"
+            "💼 `/business` — **division business & prévoyance** : revenus, trésorerie, dettes, fiscalité, sécurité.\n"
             "_Analyse non contractuelle — les agents informent, ne passent aucun ordre._"), inline=False)
         emb.add_field(name="⚙️ Contrôle & maintenance", value=(
             "✨ **Tout actualiser** · 🔄 **Synchroniser** · 🔁 **Rafraîchir panneau** · 🧠 **Optimisations IA**\n"
@@ -3706,7 +3775,7 @@ if discord is not None:
         emb.add_field(name="⌨️ Commandes", value=(
             "`/solde` `/bitget` `/momo` `/nsia`\n"
             "`/rapport` `/recap [jours]` `/historique [jours]` `/pdf [jours]`\n"
-            "`/analyse` `/optim` `/crypto` `/business` `/sync` `/etat` `/panel` `/aide`"), inline=False)
+            "`/brief` `/analyse` `/optim` `/crypto` `/business` `/sync` `/etat` `/panel` `/aide`"), inline=False)
         now = now_wat()
         emb.set_footer(text="NEXUS • alertes auto ±%.0f%% • MAJ %s" % (ALERT_PCT, now.strftime("%d/%m %H:%M")))
         view = PanelView()
@@ -3882,6 +3951,23 @@ async def run_discord(http_session):
                 data = await run_business_division(HTTP_SESSION)
         except Exception as e:
             await interaction.followup.send("Erreur division business : %s" % e)
+            return
+        async def _send(emb, view):
+            await interaction.followup.send(embed=emb, **({"view": view} if view else {}))
+        await send_ai_brief(data, _send)
+
+    @tree.command(name="brief", description="GRAND BRIEF : les 15 agents + ton profil financier + plan global (2-4 min)")
+    async def _cmd_brief(interaction):
+        if not ai_enabled():
+            await interaction.response.send_message(
+                "🧠 IA non configurée : définis **ANTHROPIC_API_KEY**, ou **AI_PROVIDER=openai** + **AI_API_KEY**.", ephemeral=True)
+            return
+        await interaction.response.defer(thinking=True)
+        try:
+            await refresh_bitget_state(HTTP_SESSION)
+            data = await run_grand_brief(HTTP_SESSION)
+        except Exception as e:
+            await interaction.followup.send("Erreur Grand Brief : %s" % e)
             return
         async def _send(emb, view):
             await interaction.followup.send(embed=emb, **({"view": view} if view else {}))
