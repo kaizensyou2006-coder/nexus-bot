@@ -124,6 +124,11 @@ ANTHROPIC_BETA    = "server-side-fallback-2026-07-01"
 #   Ollama local: http://localhost:11434/v1         modele llama3.1  (aucune cle)
 AI_BASE_URL       = (_conf("AI_BASE_URL") or "https://api.deepseek.com").rstrip("/")
 AI_API_KEY        = _conf("AI_API_KEY") or _conf("DEEPSEEK_API_KEY") or _conf("OPENROUTER_API_KEY")
+# Fournisseur de SECOURS (bascule auto si le principal est saturé : 429 / quota journalier).
+# Ex. Groq : AI_BASE_URL2=https://api.groq.com/openai/v1  AI_MODEL2=llama-3.3-70b-versatile
+AI_BASE_URL2      = (_conf("AI_BASE_URL2") or "").rstrip("/")
+AI_API_KEY2       = _conf("AI_API_KEY2") or _conf("GROQ_API_KEY")
+AI_MODEL2         = _conf("AI_MODEL2")
 AI_JSON_MODE      = (_conf("AI_JSON_MODE") or "1").lower() in ("1", "true", "yes")  # response_format json
 _def_model        = "deepseek-chat" if AI_PROVIDER == "openai" else "claude-opus-5"
 AI_MODEL          = _conf("AI_MODEL") or _def_model
@@ -1021,6 +1026,7 @@ async def h_health(request):
         "discord": bool(DISCORD_TOKEN and discord is not None),
         "bitget": bool(BITGET_KEY and BITGET_SECRET and BITGET_PASS),
         "ia": ai_enabled(),
+        "ia_secours": bool(AI_BASE_URL2 and AI_MODEL2),
         "auth": (not AUTH_WEAK),
         "persistance": ("upstash" if (UPSTASH_URL and UPSTASH_TOKEN and _UPSTASH_OK)
                         else ("upstash-degrade" if (UPSTASH_URL and UPSTASH_TOKEN) else "fichier")),
@@ -1943,8 +1949,13 @@ AGENTS = {
                 "de la limite), les OBJECTIFS d'épargne (avancement vs échéance : est-il tenable ?), les DETTES "
                 "(rythme de remboursement) et les plans DCA. Tu alertes sur chaque dérapage et proposes des "
                 "ajustements concrets (créer/relever un budget, créer un objectif, cadencer un DCA). " + _AGENT_JSON_RULE)},
+    "frais": {
+        "emoji": "🧮", "name": "Optimisation des frais",
+        "sys": ("Tu es l'agent FRAIS de NEXUS. Tu traques les fuites d'argent : frais Mobile Money (retraits, "
+                "transferts), frais bancaires, abonnements récurrents peu utilisés, doublons. Tu chiffres les "
+                "économies possibles et proposes comment réduire ces frais sans perte de service. " + _AGENT_JSON_RULE)},
 }
-AGENT_ORDER = ["patrimoine", "depenses", "epargne", "invest", "objectifs"]
+AGENT_ORDER = ["patrimoine", "depenses", "epargne", "invest", "objectifs", "frais"]
 
 
 def _ai_headers():
@@ -1983,45 +1994,61 @@ def _openai_url():
     return b + "/chat/completions"
 
 
-def _openai_headers():
+def _url_of(base):
+    b = (base or "").rstrip("/")
+    return b if b.endswith("/chat/completions") else b + "/chat/completions"
+
+def _openai_headers(key=None):
     h = {"content-type": "application/json"}
-    if AI_API_KEY:
-        h["Authorization"] = "Bearer " + AI_API_KEY
+    key = key if key is not None else AI_API_KEY
+    if key:
+        h["Authorization"] = "Bearer " + key
     return h
+
+def _ai_providers():
+    """Liste des fournisseurs à essayer, dans l'ordre : principal puis secours."""
+    provs = [{"url": _url_of(AI_BASE_URL), "key": AI_API_KEY, "model": AI_MODEL, "name": "principal"}]
+    if AI_BASE_URL2 and AI_MODEL2:
+        provs.append({"url": _url_of(AI_BASE_URL2), "key": AI_API_KEY2, "model": AI_MODEL2, "name": "secours"})
+    return provs
 
 
 async def _openai_text(session, system, user, max_tokens=3000, want_json=True):
-    """Un appel non-stream vers une API compatible OpenAI -> texte de la reponse.
-    Reessaie sans response_format si le fournisseur ne le supporte pas."""
-    base = {"model": AI_MODEL, "max_tokens": min(int(max_tokens), AI_MAX_TOKENS),
-            "temperature": 0.4,
-            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
-    attempts = []
-    if want_json and AI_JSON_MODE:
-        attempts.append(dict(base, response_format={"type": "json_object"}))
-    attempts.append(base)
+    """Appel non-stream vers une API compatible OpenAI -> texte. Bascule sur le fournisseur
+    de SECOURS si le principal est saturé (429/quota) ou en erreur ; réessaie sans
+    response_format si non supporté."""
     last_err = None
-    for payload in attempts:
-        for tent in range(3):     # petit backoff sur rate-limit ponctuel (429 / burst)
-            try:
-                async with session.post(_openai_url(), json=payload, headers=_openai_headers(),
-                                        timeout=aiohttp.ClientTimeout(total=180)) as r:
-                    status = r.status
-                    data = await r.json()
-                if status == 429:
-                    last_err = (data.get("error") or {}).get("message") or "rate limit"
-                    if "per-day" in str(last_err).lower() or "daily" in str(last_err).lower():
-                        break     # quota JOURNALIER : inutile de réessayer, on remonte l'erreur
-                    await asyncio.sleep(2.5 * (tent + 1))
-                    continue
-                if status >= 400:
-                    last_err = (data.get("error") or {}).get("message") or ("HTTP %d" % status)
-                    break         # p.ex. response_format non supporté -> on retombe sur le payload nu
-                ch = (data.get("choices") or [{}])[0]
-                return ((ch.get("message") or {}).get("content")) or ""
-            except Exception as e:
-                last_err = str(e)
-                await asyncio.sleep(1.5 * (tent + 1))
+    for prov in _ai_providers():
+        base = {"model": prov["model"], "max_tokens": min(int(max_tokens), AI_MAX_TOKENS),
+                "temperature": 0.4,
+                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
+        attempts = ([dict(base, response_format={"type": "json_object"})] if (want_json and AI_JSON_MODE) else []) + [base]
+        provider_dead = False
+        for payload in attempts:
+            if provider_dead:
+                break
+            for tent in range(2):
+                try:
+                    async with session.post(prov["url"], json=payload, headers=_openai_headers(prov["key"]),
+                                            timeout=aiohttp.ClientTimeout(total=180)) as r:
+                        status = r.status
+                        data = await r.json()
+                    if status == 429:
+                        last_err = (data.get("error") or {}).get("message") or "rate limit"
+                        low = str(last_err).lower()
+                        if "per-day" in low or "daily" in low or "quota" in low:
+                            provider_dead = True   # quota épuisé -> fournisseur suivant, ne pas insister
+                            break
+                        await asyncio.sleep(2.0 * (tent + 1))
+                        continue
+                    if status >= 400:
+                        last_err = (data.get("error") or {}).get("message") or ("HTTP %d" % status)
+                        break            # ex. response_format non supporté -> payload nu (même fournisseur)
+                    ch = (data.get("choices") or [{}])[0]
+                    return ((ch.get("message") or {}).get("content")) or ""
+                except Exception as e:
+                    last_err = str(e)
+                    await asyncio.sleep(1.0 * (tent + 1))
     raise RuntimeError(last_err or "erreur fournisseur IA")
 
 
@@ -2062,15 +2089,19 @@ async def _openai_proxy(request, body, session):
     except Exception:
         max_tok = AI_MAX_TOKENS
     want_stream = bool(body.get("stream"))
-    payload = {"model": AI_MODEL, "messages": omsgs, "max_tokens": max_tok,
-               "temperature": 0.4, "stream": want_stream}
     fin_map = {"length": "max_tokens", "stop": "end_turn", "content_filter": "refusal"}
+    provs = _ai_providers()
 
     if not want_stream:
-        async with session.post(_openai_url(), json=payload, headers=_openai_headers(),
-                                timeout=aiohttp.ClientTimeout(total=180)) as up:
-            data = await up.json()
-            status = up.status
+        data, status = {}, 500
+        for prov in provs:                 # bascule secours si le principal est saturé
+            payload = {"model": prov["model"], "messages": omsgs, "max_tokens": max_tok, "temperature": 0.4}
+            async with session.post(prov["url"], json=payload, headers=_openai_headers(prov["key"]),
+                                    timeout=aiohttp.ClientTimeout(total=180)) as up:
+                data = await up.json()
+                status = up.status
+            if status < 400:
+                break
         if status >= 400:
             msg = (data.get("error") or {}).get("message") or ("HTTP %d" % status)
             return cors(web.json_response({"error": {"message": msg}}, status=status), request)
@@ -2080,8 +2111,17 @@ async def _openai_proxy(request, body, session):
         return cors(web.json_response({"content": [{"type": "text", "text": txt}],
                                        "stop_reason": "end_turn"}), request)
 
-    up = await session.post(_openai_url(), json=payload, headers=_openai_headers(),
-                            timeout=aiohttp.ClientTimeout(total=180))
+    # Streaming : on tente le principal, et on bascule sur le secours si connexion saturée.
+    up = None
+    for prov in provs:
+        payload = {"model": prov["model"], "messages": omsgs, "max_tokens": max_tok,
+                   "temperature": 0.4, "stream": True}
+        up = await session.post(prov["url"], json=payload, headers=_openai_headers(prov["key"]),
+                                timeout=aiohttp.ClientTimeout(total=180))
+        if up.status < 400:
+            break
+        if prov is not provs[-1]:
+            up.release()               # saturé -> on essaie le secours
     resp = web.StreamResponse(status=(200 if up.status < 400 else up.status))
     resp.headers["Content-Type"] = "text/event-stream"
     cors(resp, request)
@@ -2460,8 +2500,14 @@ CRYPTO_AGENTS = {
                 "décris le rôle de chacune dans le portefeuille (cœur, satellite, stable, spéculatif), son poids et "
                 "son risque relatif, et tu suggères si sa place mérite d'être renforcée, tenue ou allégée — en termes "
                 "de construction de portefeuille, jamais comme un conseil d'achat nominal. " + _CRYPTO_RULE)},
+    "risque": {
+        "emoji": "⚠️", "name": "Gestion du risque",
+        "sys": ("Tu es l'agent RISQUE de la division crypto. Tu évalues l'exposition globale : volatilité du "
+                "portefeuille, part à risque vs stable, scénario de forte baisse (stress-test : que devient le "
+                "patrimoine si le marché chute de 30-50 %), et tu proposes des garde-fous prudents (bande de "
+                "sécurité stablecoin, plafond d'exposition, prise de bénéfices progressive). " + _CRYPTO_RULE)},
 }
-CRYPTO_ORDER = ["integrite", "allocation", "dca", "performance", "opportunites"]
+CRYPTO_ORDER = ["integrite", "allocation", "dca", "performance", "opportunites", "risque"]
 
 async def run_crypto_division(session, question=""):
     """La division crypto au complet : contrôle d'exactitude + 4 agents d'analyse + synthèse."""
@@ -2509,8 +2555,13 @@ BUSINESS_AGENTS = {
                 "des dépenses inhabituelles, des frais qui grimpent, des mouvements suspects, et tu rappelles l'hygiène "
                 "de sécurité (PIN, phishing, double vérification). Signale ce qui mérite un contrôle de l'utilisateur. "
                 + _AGENT_JSON_RULE)},
+    "projets": {
+        "emoji": "🚀", "name": "Projets & long terme",
+        "sys": ("Tu es l'agent PROJETS de NEXUS. Tu regardes au-delà du mois : grands objectifs (achat, immobilier, "
+                "matelas d'indépendance, long terme), et tu proposes un plan d'épargne/investissement échelonné et "
+                "réaliste pour les atteindre, avec des jalons chiffrés et des échéances. " + _AGENT_JSON_RULE)},
 }
-BUSINESS_ORDER = ["revenus", "tresorerie", "dettes", "fiscalite", "securite"]
+BUSINESS_ORDER = ["revenus", "tresorerie", "dettes", "fiscalite", "securite", "projets"]
 
 async def run_business_division(session, question=""):
     """Division Business & Prévoyance : 5 agents sur la même photo financière + synthèse."""
@@ -3846,7 +3897,7 @@ if discord is not None:
             "📊 **Rapport complet** · 📅 **7 j** · 🗓️ **14 j** · 📆 **30 j** · 📊 **90 j**\n"
             "📄 **PDF 30 j** · 🗒️ **PDF 7 j** · 📉 **Historique** (graphe + projection 12M)"), inline=False)
         _ia = "OK" if (ANTHROPIC_API_KEY or ai_enabled()) else "à configurer"
-        emb.add_field(name="🧠 Intelligence — 15 agents en 3 divisions (%s)" % _ia, value=(
+        emb.add_field(name="🧠 Intelligence — 18 agents en 3 divisions (%s)" % _ia, value=(
             "🎯 `/brief` — **GRAND BRIEF** : les 15 agents + ton **profil financier** + plan global.\n"
             "🧠 `/optim` — **division finance** (patrimoine · dépenses · épargne · invest · objectifs).\n"
             "🪙 `/crypto` — **division crypto** : contrôle d'**exactitude Bitget** + allocation, DCA, perf, par actif.\n"

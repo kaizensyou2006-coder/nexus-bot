@@ -266,8 +266,10 @@ class TestDivisionCrypto(unittest.TestCase):
         self.assertEqual(set(N.BUSINESS_ORDER), set(N.BUSINESS_AGENTS.keys()))
         for k in ("revenus", "tresorerie", "dettes", "fiscalite", "securite"):
             self.assertIn(k, N.BUSINESS_AGENTS)
-        # 3 divisions = 15 agents, sans collision de clés entre finance et crypto
-        self.assertEqual(len(N.AGENTS) + len(N.CRYPTO_AGENTS) + len(N.BUSINESS_AGENTS), 15)
+        # 3 divisions de 6 agents = 18 au total
+        self.assertEqual(len(N.AGENTS) + len(N.CRYPTO_AGENTS) + len(N.BUSINESS_AGENTS), 18)
+        for reg, order in ((N.AGENTS, N.AGENT_ORDER), (N.CRYPTO_AGENTS, N.CRYPTO_ORDER), (N.BUSINESS_AGENTS, N.BUSINESS_ORDER)):
+            self.assertEqual(set(reg.keys()), set(order))
 
     def test_coin_base(self):
         self.assertEqual(N._coin_base("BTC ⟢Earn"), "BTC")
