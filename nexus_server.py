@@ -2143,14 +2143,16 @@ def _parse_agent_json(text):
     return {"score": None, "resume": t[:400], "recommandations": []}
 
 
-async def run_agent(session, key, question="", snap=None):
-    """Lance un agent et renvoie son resultat structure (jamais d'exception)."""
-    meta = AGENTS.get(key)
+async def run_agent(session, key, question="", snap=None, registry=None):
+    """Lance un agent et renvoie son resultat structure (jamais d'exception).
+    `registry` permet de choisir la famille d'agents (AGENTS par defaut, CRYPTO_AGENTS...)."""
+    registry = registry if registry is not None else AGENTS
+    meta = registry.get(key)
     if not meta:
         return {"key": key, "error": "agent inconnu"}
     if snap is None:
         snap = finance_snapshot()
-    user = "Voici la situation financiere actuelle :\n\n" + snap
+    user = "Voici la situation a analyser :\n\n" + snap
     if question:
         user += "\n\nQuestion prioritaire de l'utilisateur : " + question
     try:
@@ -2165,14 +2167,9 @@ async def run_agent(session, key, question="", snap=None):
             "recommandations": recs[:4]}
 
 
-async def run_all_agents(session, question=""):
-    """Lance les 4 agents en parallele + une synthese globale des priorites."""
-    if not ai_enabled():
-        return {"ok": False, "error": "IA non configuree (definir la cle du fournisseur : ANTHROPIC_API_KEY, ou AI_PROVIDER=openai + AI_API_KEY)."}
-    snap = finance_snapshot()
-    results = await asyncio.gather(*[run_agent(session, k, question, snap) for k in AGENT_ORDER])
-    agents = list(results)
-    # Synthese : le modele hierarchise les recommandations des 4 agents en un plan d'action.
+async def _synthesize(session, agents, snap, lead_sys=None):
+    """Consolide les recommandations d'un groupe d'agents en un plan priorise unique.
+    Filet garanti : si le modele ne rend rien, on reconstruit depuis les recos 'haute'."""
     synth = None
     digest = []
     for a in agents:
@@ -2180,44 +2177,218 @@ async def run_all_agents(session, question=""):
             continue
         for r in (a.get("recommandations") or []):
             digest.append("[%s] %s — %s (impact %s, priorite %s)"
-                          % (a["name"], r.get("titre", ""), r.get("detail", ""),
+                          % (a.get("name", ""), r.get("titre", ""), r.get("detail", ""),
                              r.get("impact", "n/d"), r.get("priorite", "?")))
     if digest:
-        sys_p = ("Tu es l'ORCHESTRATEUR de NEXUS. On te donne les recommandations de 4 agents financiers. "
-                 "Tu produis un plan d'action unique et priorise. " + _AGENT_JSON_RULE
-                 + " Le champ 'recommandations' contient les 3 a 5 actions les PLUS importantes, tous agents confondus.")
+        sys_p = lead_sys or ("Tu es l'ORCHESTRATEUR de NEXUS. On te donne les recommandations de plusieurs "
+                             "agents financiers. Tu produis un plan d'action unique et priorise. " + _AGENT_JSON_RULE
+                             + " Le champ 'recommandations' contient les 3 a 5 actions les PLUS importantes, tous agents confondus.")
         try:
-            txt = await _ai_text(session, sys_p,
-                                        "Recommandations des agents :\n" + "\n".join(digest)
-                                        + "\n\nSituation :\n" + snap, max_tokens=2000)
+            txt = await _ai_text(session, sys_p, "Recommandations des agents :\n" + "\n".join(digest)
+                                 + "\n\nSituation :\n" + snap, max_tokens=2000)
             synth = _parse_agent_json(txt)
             if isinstance(synth, dict):
-                # certains modeles renvoient la cle anglaise 'recommendations'
                 synth["recommandations"] = (synth.get("recommandations")
                                             or synth.get("recommendations") or [])[:5]
         except Exception as e:
-            log.warning("synthese agents: %s", e)
-    # Filet : si la synthese est vide, on la reconstruit a partir des recommandations
-    # 'haute' priorite des agents (le brief a toujours un plan d'action).
+            log.warning("synthese: %s", e)
     if not (synth and synth.get("recommandations")):
-        top = []
-        for a in agents:
-            for r in (a.get("recommandations") or []):
-                if (r.get("priorite") or "").lower() == "haute":
-                    top.append(r)
-        if not top:                       # sinon, les premieres de chaque agent
-            for a in agents:
-                if a.get("recommandations"):
-                    top.append(a["recommandations"][0])
+        top = [r for a in agents for r in (a.get("recommandations") or [])
+               if (r.get("priorite") or "").lower() == "haute"]
+        if not top:
+            top = [a["recommandations"][0] for a in agents if a.get("recommandations")]
         if top:
-            synth = {"score": None,
-                     "resume": "Actions prioritaires consolidées à partir des agents.",
+            synth = {"score": None, "resume": "Actions prioritaires consolidées à partir des agents.",
                      "recommandations": top[:5]}
+    return synth
+
+
+async def run_all_agents(session, question=""):
+    """Lance les 4 agents en parallele + une synthese globale des priorites."""
+    if not ai_enabled():
+        return {"ok": False, "error": "IA non configuree (definir la cle du fournisseur : ANTHROPIC_API_KEY, ou AI_PROVIDER=openai + AI_API_KEY)."}
+    snap = finance_snapshot()
+    results = await asyncio.gather(*[run_agent(session, k, question, snap) for k in AGENT_ORDER])
+    agents = list(results)
+    synth = await _synthesize(session, agents, snap)
     try:
         record_ai_snapshot()     # memoire : ce brief devient le point de comparaison suivant
     except Exception as e:
         log.warning("record_ai_snapshot: %s", e)
     return {"ok": True, "agents": agents, "synthese": synth, "ts": int(time.time())}
+
+
+# ========================================================================
+# DIVISION CRYPTO (Bitget) — contrôle d'exactitude + analyse dédiée
+# ========================================================================
+_STABLES = {"USDT", "USDC", "USD", "BUSD", "DAI", "TUSD", "FDUSD"}
+
+def _coin_base(c):
+    """Nom de coin nu (retire le suffixe '⟢Earn' et met en majuscules)."""
+    return str(c or "").split(" ")[0].upper()
+
+async def bitget_reconcile(session):
+    """VÉRIFICATION DÉTERMINISTE (pas de l'IA) de l'exactitude des données Bitget :
+    compare le direct (API Bitget signée) à l'état stocké/affiché, et signale tout écart,
+    péremption, ou couverture manquante (staking non vu par l'API). Base de l'agent Intégrité."""
+    findings = []
+    live = None
+    if not (BITGET_KEY and BITGET_SECRET and BITGET_PASS):
+        findings.append({"niveau": "erreur", "msg": "Clés Bitget non configurées côté serveur."})
+        return {"live": None, "stored": STATE.get("bitget") or {}, "findings": findings, "ok": False}
+    try:
+        live = await bitget_overview(session, force=True)   # force = ignore le cache
+    except Exception as e:
+        findings.append({"niveau": "erreur", "msg": "API Bitget injoignable : %s" % e})
+    stored = STATE.get("bitget") or {}
+    calib = STATE.get("bg_calib") or {}
+    now = time.time()
+    # 1) Fraîcheur de l'état stocké
+    ts = (stored.get("ts") or 0) / 1000.0
+    if ts:
+        age_min = (now - ts) / 60.0
+        if age_min > 15:
+            findings.append({"niveau": "attention", "msg": "État Bitget stocké vieux de %d min (resynchroniser)." % age_min})
+        else:
+            findings.append({"niveau": "ok", "msg": "État stocké frais (%d min)." % age_min})
+    if live:
+        lt = float(live.get("total") or 0)
+        st = float(stored.get("total") or 0)
+        # 2) Écart total direct vs stocké
+        if st and abs(lt - st) / max(st, 1e-9) > 0.02:
+            findings.append({"niveau": "attention",
+                             "msg": "Écart total direct vs stocké : %s vs %s (%.1f%%) — resync conseillé."
+                                    % (fmt_usd(lt), fmt_usd(st), (lt - st) / st * 100.0)})
+        elif st:
+            findings.append({"niveau": "ok", "msg": "Total direct ≈ stocké (%s)." % fmt_usd(lt)})
+        # 3) Cohérence interne : somme des positions (spot+earn) vs total tous comptes
+        hold = live.get("holdings") or []
+        hsum = sum(float(v or 0) for _, _, v in hold)
+        others = float(live.get("others") or 0)
+        gap = lt - hsum
+        if others > 1 and abs(gap - others) / max(others, 1e-9) > 0.15:
+            findings.append({"niveau": "info",
+                             "msg": "%s hors spot/earn (bots/futures) non détaillés par position." % fmt_usd(others)})
+        # 4) Positions valorisées à 0 (prix manquant) = chiffre potentiellement faux
+        zeros = [_coin_base(c) for c, a, v in hold if float(a or 0) > 0 and float(v or 0) <= 0 and _coin_base(c) not in _STABLES]
+        if zeros:
+            findings.append({"niveau": "attention",
+                             "msg": "Position(s) sans prix (valorisées à 0) : %s — total sous-estimé." % ", ".join(sorted(set(zeros))[:8])})
+        # 5) Calage staking manuel (le staking hors API n'est compté que s'il est calé)
+        stk = {k: v for k, v in (calib.get("staking") or {}).items() if v}
+        extra = float(calib.get("extra") or 0)
+        if stk or extra:
+            det = ", ".join("%s=%s" % (k, v) for k, v in stk.items())
+            findings.append({"niveau": "info", "msg": "Calage manuel actif%s%s."
+                             % ((" (staking : %s)" % det) if det else "", (" · extra %s" % fmt_usd(extra)) if extra else "")})
+        else:
+            findings.append({"niveau": "info",
+                             "msg": "Aucun calage staking manuel : un staking non remonté par l'API ne serait pas compté."})
+    return {"live": live, "stored": stored, "calib": calib,
+            "findings": findings, "ok": not any(f["niveau"] == "erreur" for f in findings)}
+
+async def crypto_snapshot(session):
+    """Photo détaillée du compte crypto (Bitget) pour la division crypto, avec le bloc
+    de contrôle d'exactitude déterministe. Renvoie (texte, reconcile)."""
+    rec = await bitget_reconcile(session)
+    live = rec.get("live") or {}
+    stored = rec.get("stored") or {}
+    hold = live.get("holdings") or [(_coin_base(h.get("coin")), h.get("amt"), h.get("val"))
+                                    for h in (stored.get("holdings") or [])]
+    total = float(live.get("total") or stored.get("total") or 0)
+    lines = ["# COMPTE BITGET (crypto) — au %s" % now_wat().strftime("%d/%m/%Y %H:%M")]
+    lines.append("Total tous comptes : %s (= %s)" % (fmt_usd(total), fmt_xof(total * get_usd_xof())))
+    lines.append("  Spot %s · Earn %s · Autres (bots/futures) %s"
+                 % (fmt_usd(live.get("spot", 0)), fmt_usd(live.get("earn", 0)), fmt_usd(live.get("others", 0))))
+    # Agrégation par coin (spot + earn regroupés)
+    agg = {}
+    for c, a, v in hold:
+        b = _coin_base(c)
+        agg[b] = agg.get(b, 0.0) + float(v or 0)
+    ranked = sorted(agg.items(), key=lambda kv: -kv[1])
+    stable_val = sum(v for c, v in agg.items() if c in _STABLES)
+    lines.append("Part stablecoins : %.0f%% · positions distinctes : %d"
+                 % ((stable_val / total * 100) if total else 0, len([c for c in agg if c not in _STABLES])))
+    if ranked and total:
+        lines.append("Concentration 1re position (%s) : %.0f%%" % (ranked[0][0], ranked[0][1] / total * 100))
+    ch = live.get("change") or {}
+    lines.append("\n# POSITIONS (valeur, poids, variation 24h)")
+    for c, v in ranked[:15]:
+        w = (v / total * 100) if total else 0
+        chg = ch.get(c)
+        chs = (" · %+.1f%%/24h" % chg) if isinstance(chg, (int, float)) else ""
+        lines.append("  %s : %s · %.1f%%%s" % (c, fmt_usd(v), w, chs))
+    dcas = ((STATE.get("objectifs") or {}).get("dcas")) or []
+    if dcas:
+        lines.append("\n# PLANS DCA ACTIFS")
+        for d in dcas:
+            lines.append("  %s : %s / %s%s" % (d.get("asset"), fmt_xof(d.get("amount", 0)),
+                                               d.get("freq", "?"), " (auto)" if d.get("auto") else ""))
+    else:
+        lines.append("\n# PLANS DCA ACTIFS : aucun")
+    lines.append("\n# CONTRÔLE D'EXACTITUDE DES DONNÉES (déterministe, calculé par le serveur)")
+    for f in rec["findings"]:
+        lines.append("  [%s] %s" % (f["niveau"].upper(), f["msg"]))
+    if not rec["findings"]:
+        lines.append("  RAS.")
+    return "\n".join(lines), rec
+
+_CRYPTO_RULE = (_AGENT_JSON_RULE +
+    " CONTEXTE CRYPTO : marché très volatil ; tu raisonnes en construction de portefeuille "
+    "(poids, risque, diversification, discipline), JAMAIS en prédiction de prix ni en ordre nominal "
+    "d'achat/vente. Les actions 'dca' que tu proposes sont des automatisations que l'utilisateur "
+    "choisit d'activer, pas un ordre. Rappelle la prudence quand c'est pertinent.")
+
+CRYPTO_AGENTS = {
+    "integrite": {
+        "emoji": "🔎", "name": "Intégrité des données Bitget",
+        "sys": ("Tu es l'agent INTÉGRITÉ de la division crypto de NEXUS. On te donne un CONTRÔLE "
+                "D'EXACTITUDE déterministe (direct API Bitget vs état affiché). Ton rôle : dire si on "
+                "PEUT SE FIER aux chiffres affichés, expliquer chaque écart/anomalie en clair, et proposer "
+                "la correction concrète (resynchroniser, caler le staking manquant, revérifier une position "
+                "sans prix). Le 'score' = niveau de confiance dans les données (0=faux, 100=exact). " + _CRYPTO_RULE)},
+    "allocation": {
+        "emoji": "⚖️", "name": "Allocation & risque",
+        "sys": ("Tu es l'agent ALLOCATION de la division crypto. Tu analyses la répartition : concentration "
+                "sur une position, part de stablecoins, diversification, exposition au risque. Tu proposes des "
+                "ajustements de poids en termes généraux (%, classes), pour un portefeuille plus robuste. " + _CRYPTO_RULE)},
+    "dca": {
+        "emoji": "🤖", "name": "Stratégie DCA",
+        "sys": ("Tu es l'agent DCA de la division crypto. Tu évalues les plans DCA actuels (cadence, montant, "
+                "actifs) et la trésorerie disponible, et tu proposes des ajustements : augmenter/lisser un DCA, "
+                "en créer un sur un actif sous-pondéré, adapter la fréquence. Chiffre l'effort mensuel. " + _CRYPTO_RULE)},
+    "performance": {
+        "emoji": "📈", "name": "Performance & rééquilibrage",
+        "sys": ("Tu es l'agent PERFORMANCE de la division crypto. Tu repères les positions en forte hausse/baisse "
+                "(via la variation 24h et les poids), les surpondérations à alléger et les sous-pondérations, et tu "
+                "proposes une logique de rééquilibrage prudente (bandes de tolérance), sans timing de marché. " + _CRYPTO_RULE)},
+    "opportunites": {
+        "emoji": "💡", "name": "Analyse par actif",
+        "sys": ("Tu es l'agent ANALYSE PAR ACTIF de la division crypto. Pour les principales cryptos détenues, tu "
+                "décris le rôle de chacune dans le portefeuille (cœur, satellite, stable, spéculatif), son poids et "
+                "son risque relatif, et tu suggères si sa place mérite d'être renforcée, tenue ou allégée — en termes "
+                "de construction de portefeuille, jamais comme un conseil d'achat nominal. " + _CRYPTO_RULE)},
+}
+CRYPTO_ORDER = ["integrite", "allocation", "dca", "performance", "opportunites"]
+
+async def run_crypto_division(session, question=""):
+    """La division crypto au complet : contrôle d'exactitude + 4 agents d'analyse + synthèse."""
+    if not ai_enabled():
+        return {"ok": False, "error": "IA non configurée."}
+    if not (BITGET_KEY and BITGET_SECRET and BITGET_PASS):
+        return {"ok": False, "error": "Bitget non configuré (clés serveur)."}
+    snap, rec = await crypto_snapshot(session)
+    results = await asyncio.gather(*[run_agent(session, k, question, snap, registry=CRYPTO_AGENTS)
+                                     for k in CRYPTO_ORDER])
+    agents = list(results)
+    lead = ("Tu es le CHEF DE LA DIVISION CRYPTO de NEXUS. On te donne les analyses de tes agents "
+            "(intégrité des données, allocation, DCA, performance, analyse par actif). Tu produis le plan "
+            "d'action crypto priorisé. " + _CRYPTO_RULE
+            + " 'recommandations' = les 3 à 5 actions crypto les plus importantes.")
+    synth = await _synthesize(session, agents, snap, lead_sys=lead)
+    # Le contrôle d'exactitude déterministe est renvoyé tel quel (source de vérité, pas de l'IA).
+    return {"ok": True, "agents": agents, "synthese": synth,
+            "reconcile": rec.get("findings"), "reconcile_ok": rec.get("ok"), "ts": int(time.time())}
 
 
 # ----------------------- Actions IA (proposees -> appliquees dans l'app) -----------------------
@@ -2369,6 +2540,18 @@ async def h_agents(request):
     try:
         if which in ("all", "brief", "tout"):
             out = await run_all_agents(session, question)
+        elif which in ("crypto", "division", "crypto-division"):
+            out = await run_crypto_division(session, question)         # la division crypto complète
+        elif which in ("bitget", "integrite", "exactitude", "verif"):
+            # Contrôle d'exactitude seul : findings déterministes + agent Intégrité.
+            snap, rec = await crypto_snapshot(session)
+            ag = await run_agent(session, "integrite", question, snap, registry=CRYPTO_AGENTS)
+            out = {"ok": True, "agents": [ag], "synthese": None,
+                   "reconcile": rec.get("findings"), "reconcile_ok": rec.get("ok")}
+        elif which in CRYPTO_AGENTS:
+            snap, _ = await crypto_snapshot(session)
+            out = {"ok": True, "agents": [await run_agent(session, which, question, snap, registry=CRYPTO_AGENTS)],
+                   "synthese": None}
         elif which in AGENTS:
             out = {"ok": True, "agents": [await run_agent(session, which, question)], "synthese": None}
         else:
@@ -2714,6 +2897,13 @@ if discord is not None:
         head = discord.Embed(title="🧠 NEXUS — Plan d'optimisation",
                 description=(syn.get("resume") or "Actions prioritaires, tous agents confondus :"),
                 color=GOLD)
+        # Contrôle d'exactitude des données (déterministe) en tête, si fourni (division crypto).
+        rec = data.get("reconcile")
+        if rec:
+            ic = {"ok": "🟢", "info": "🔵", "attention": "🟠", "erreur": "🔴"}
+            txt = "\n".join("%s %s" % (ic.get(f.get("niveau"), "•"), f.get("msg", "")) for f in rec[:6])
+            head.add_field(name=("✅ Données Bitget fiables" if data.get("reconcile_ok") else "⚠️ Données Bitget à vérifier"),
+                           value=(txt[:1020] or "RAS"), inline=False)
         for r in (syn.get("recommandations") or [])[:5]:
             head.add_field(name="%s %s" % (prio.get((r.get("priorite") or "").lower(), "•"), r.get("titre", "")),
                            value=rec_val(r), inline=False)
@@ -3414,7 +3604,7 @@ if discord is not None:
         emb.add_field(name="⌨️ Commandes", value=(
             "`/solde` `/bitget` `/momo` `/nsia`\n"
             "`/rapport` `/recap [jours]` `/historique [jours]` `/pdf [jours]`\n"
-            "`/analyse` `/optim` `/sync` `/etat` `/panel` `/aide`"), inline=False)
+            "`/analyse` `/optim` `/crypto` `/sync` `/etat` `/panel` `/aide`"), inline=False)
         now = now_wat()
         emb.set_footer(text="NEXUS • alertes auto ±%.0f%% • MAJ %s" % (ALERT_PCT, now.strftime("%d/%m %H:%M")))
         view = PanelView()
@@ -3547,6 +3737,32 @@ async def run_discord(http_session):
             await interaction.followup.send(embed=emb, **({"view": view} if view else {}))
         await send_ai_brief(data, _send)
 
+    @tree.command(name="crypto", description="Division crypto : contrôle d'exactitude Bitget + analyse dédiée (5 agents)")
+    @discord.app_commands.describe(agent="Cibler : integrite, allocation, dca, performance, opportunites (vide = division complète)")
+    async def _cmd_crypto(interaction, agent: str = ""):
+        if not ai_enabled():
+            await interaction.response.send_message(
+                "🧠 IA non configurée : définis **ANTHROPIC_API_KEY**, ou **AI_PROVIDER=openai** + **AI_API_KEY**.", ephemeral=True)
+            return
+        if not (BITGET_KEY and BITGET_SECRET and BITGET_PASS):
+            await interaction.response.send_message("📈 Bitget non configuré (clés serveur).", ephemeral=True)
+            return
+        await interaction.response.defer(thinking=True)
+        key = (agent or "").strip().lower()
+        try:
+            if key in CRYPTO_AGENTS:
+                snap, rec = await crypto_snapshot(HTTP_SESSION)
+                data = {"ok": True, "agents": [await run_agent(HTTP_SESSION, key, "", snap, registry=CRYPTO_AGENTS)],
+                        "synthese": None, "reconcile": rec.get("findings"), "reconcile_ok": rec.get("ok")}
+            else:
+                data = await run_crypto_division(HTTP_SESSION)
+        except Exception as e:
+            await interaction.followup.send("Erreur division crypto : %s" % e)
+            return
+        async def _send(emb, view):
+            await interaction.followup.send(embed=emb, **({"view": view} if view else {}))
+        await send_ai_brief(data, _send)
+
     @tree.command(name="solde", description="Patrimoine total consolidé (MoMo + NSIA + Bitget)")
     async def _cmd_solde(interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -3655,7 +3871,8 @@ async def run_discord(http_session):
             "`/pdf [jours]` — rapport PDF · ex `/pdf 7`"), inline=False)
         e.add_field(name="🧠 Optimisations IA", value=(
             "`/optim` — plan d'action des 5 agents (patrimoine, dépenses, épargne, invest, objectifs)\n"
-            "`/optim invest` — cibler un seul agent"), inline=False)
+            "`/optim invest` — cibler un seul agent\n"
+            "`/crypto` — division crypto : contrôle d'exactitude Bitget + analyse dédiée"), inline=False)
         e.add_field(name="⚙️ Contrôle", value=(
             "`/panel` — panneau de contrôle (tout d'un clic)\n"
             "`/sync` — synchroniser Bitget maintenant\n"

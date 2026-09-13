@@ -998,7 +998,7 @@ textarea.cinp::placeholder{color:var(--t3);}
   <div class="card" id="agents-panel" style="padding:16px;margin-bottom:14px">
     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:4px">
       <div style="font-weight:800;font-family:var(--fn);color:var(--gl)">🧠 Agents d'optimisation</div>
-      <button class="btn btn-gold btn-sm" id="ag-all" onclick="runAgents('all')">⚡ Brief complet (4 agents)</button>
+      <button class="btn btn-gold btn-sm" id="ag-all" onclick="runAgents('all')">⚡ Brief complet (5 agents)</button>
     </div>
     <p style="font-size:11px;color:var(--t2);font-family:var(--fm);margin:2px 0 10px">Chaque agent analyse tes données et propose des optimisations chiffrées et priorisées.</p>
     <div style="display:flex;flex-wrap:wrap;gap:7px">
@@ -1006,8 +1006,25 @@ textarea.cinp::placeholder{color:var(--t3);}
       <button class="btn btn-ghost btn-sm" onclick="runAgents('depenses')">💸 Dépenses</button>
       <button class="btn btn-ghost btn-sm" onclick="runAgents('epargne')">🎯 Épargne</button>
       <button class="btn btn-ghost btn-sm" onclick="runAgents('invest')">📈 Investissement</button>
+      <button class="btn btn-ghost btn-sm" onclick="runAgents('objectifs')">🎯 Objectifs</button>
     </div>
     <div id="agents-out" style="margin-top:12px"></div>
+  </div>
+
+  <div class="card" id="crypto-panel" style="padding:16px;margin-bottom:14px;border-color:rgba(0,229,255,.22)">
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:4px">
+      <div style="font-weight:800;font-family:var(--fn);color:var(--hx-cyan,#00E5FF)">🪙 Division Crypto — Bitget</div>
+      <button class="btn btn-sm" style="background:linear-gradient(135deg,#00E5FF,#0088aa);color:#04121a;font-weight:800" onclick="runAgents('crypto')">⚡ Analyse complète (division)</button>
+    </div>
+    <p style="font-size:11px;color:var(--t2);font-family:var(--fm);margin:2px 0 10px">Contrôle d'exactitude des données Bitget + agents dédiés (allocation, DCA, performance, analyse par actif).</p>
+    <div style="display:flex;flex-wrap:wrap;gap:7px">
+      <button class="btn btn-ghost btn-sm" onclick="runAgents('bitget')">🔎 Exactitude des données</button>
+      <button class="btn btn-ghost btn-sm" onclick="runAgents('allocation')">⚖️ Allocation</button>
+      <button class="btn btn-ghost btn-sm" onclick="runAgents('dca')">🤖 DCA</button>
+      <button class="btn btn-ghost btn-sm" onclick="runAgents('performance')">📈 Performance</button>
+      <button class="btn btn-ghost btn-sm" onclick="runAgents('opportunites')">💡 Par actif</button>
+    </div>
+    <div id="crypto-out" style="margin-top:12px"></div>
   </div>
   <div class="card" style="padding:16px;display:flex;flex-direction:column;height:calc(100vh - 220px);min-height:500px">
     <div id="chat-msgs" class="chat-msgs" role="log" aria-live="polite" aria-relevant="additions text" aria-label="Conversation avec NEXUS IA"></div>
@@ -2297,21 +2314,33 @@ function claudeText(data){
   return b?b.text:'';
 }
 const SUGGS=['Analysez mon portefeuille complet','Quel est mon taux d\'épargne ?','Quand exécuter mes prochains DCA ?','Résumez mes finances','Quels actifs sont en perte ?','Optimisez mon budget'];
-/* ---------- Agents d'optimisation (moteur côté serveur) ---------- */
-function agentBusy(b){document.querySelectorAll('#agents-panel button').forEach(x=>{x.disabled=b;});}
+/* ---------- Agents d'optimisation + Division Crypto (moteur côté serveur) ---------- */
+const CRYPTO_WHICH=['crypto','bitget','allocation','dca','performance','opportunites'];
+function agentBusy(panel,b){document.querySelectorAll('#'+panel+' button').forEach(x=>{x.disabled=b;});}
 async function runAgents(which){
-  const out=document.getElementById('agents-out');if(!out)return;
+  const isCrypto=CRYPTO_WHICH.includes(which);
+  const panel=isCrypto?'crypto-panel':'agents-panel', outId=isCrypto?'crypto-out':'agents-out';
+  const out=document.getElementById(outId);if(!out)return;
   const srv=aiServer();
   if(!srv){out.innerHTML='<div style="font-size:12px;color:var(--warn)">Les agents tournent côté serveur. Configure le serveur NEXUS dans ⚙ Paramètres.</div>';return;}
-  agentBusy(true);
-  out.innerHTML='<div style="display:flex;align-items:center;gap:8px;color:var(--t2);font-size:13px"><div class="typing"><span></span><span></span><span></span></div> Analyse en cours… (10–40 s selon le nombre d\'agents)</div>';
+  agentBusy(panel,true);
+  out.innerHTML='<div style="display:flex;align-items:center;gap:8px;color:var(--t2);font-size:13px"><div class="typing"><span></span><span></span><span></span></div> Analyse en cours… (10–60 s selon le nombre d\'agents)</div>';
   try{
     const r=await fetch(srv+'/agents',{method:'POST',headers:(typeof nexusHdrs==='function')?nexusHdrs({'Content-Type':'application/json'}):{'Content-Type':'application/json'},signal:AbortSignal.timeout(180000),body:JSON.stringify({agent:which})});
     const d=await r.json();
     if(!r.ok||!d.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
-    renderAgentCards(d);
+    renderAgentCards(d,outId);
   }catch(e){out.innerHTML='<div style="font-size:12px;color:var(--err)">Erreur agents : '+esc(e.message)+'</div>';}
-  finally{agentBusy(false);}
+  finally{agentBusy(panel,false);}
+}
+/* Bloc « exactitude des données » (déterministe, renvoyé par la division crypto). */
+function _reconcileBlock(rec,ok){
+  if(!rec||!rec.length)return '';
+  const ic={ok:'🟢',info:'🔵',attention:'🟠',erreur:'🔴'};
+  const rows=rec.map(f=>`<div style="display:flex;gap:7px;font-size:11.5px;color:var(--t1);margin-top:3px"><span>${ic[f.niveau]||'•'}</span><span>${esc(f.msg||'')}</span></div>`).join('');
+  const col=ok?'var(--ok)':'var(--warn)';
+  return `<div style="border:1px solid ${col};border-radius:12px;padding:11px 13px;margin-bottom:10px;background:rgba(0,229,255,.05)">
+    <div style="font-weight:800;font-size:12.5px;color:${col}">${ok?'✅ Données Bitget fiables':'⚠️ Données Bitget à vérifier'}</div>${rows}</div>`;
 }
 function _prioTag(p){const m={haute:['🔴','Priorité haute'],moyenne:['🟠','Priorité moyenne'],basse:['🟢','Priorité basse']};const x=m[(p||'').toLowerCase()]||['•','Priorité'];return `<span style="font-size:10px;color:var(--t2)">${x[0]} ${x[1]}</span>`;}
 /* Une action IA est applicable si elle a un type connu et les champs requis. */
@@ -2354,8 +2383,9 @@ function _recCard(r){
   ${(r.impact&&r.impact!=='n/d')?`<div style="font-size:11px;color:var(--ok);margin-top:5px;font-family:var(--fm)">💡 Impact estimé : ${esc(r.impact)}</div>`:''}
   ${actBtn}
 </div>`;}
-function renderAgentCards(d){
-  const out=document.getElementById('agents-out');if(!out)return;let h='';window._agentActions=[];
+function renderAgentCards(d,outId){
+  const out=document.getElementById(outId||'agents-out');if(!out)return;let h='';window._agentActions=[];
+  if(d.reconcile)h+=_reconcileBlock(d.reconcile,d.reconcile_ok);
   const syn=d.synthese;
   if(syn&&(syn.resume||(syn.recommandations||[]).length)){
     h+=`<div style="border:1px solid var(--gl);border-radius:12px;padding:12px;margin-bottom:10px;background:rgba(201,162,39,.06)">

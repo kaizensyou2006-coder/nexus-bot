@@ -230,6 +230,29 @@ class TestAuth(unittest.TestCase):
             N.AUTH_TOKEN = old
 
 
+class TestDivisionCrypto(unittest.TestCase):
+    def test_agents_crypto_definis(self):
+        self.assertEqual(set(N.CRYPTO_ORDER), set(N.CRYPTO_AGENTS.keys()))
+        self.assertIn("integrite", N.CRYPTO_AGENTS)      # agent d'exactitude
+        for meta in N.CRYPTO_AGENTS.values():
+            self.assertTrue(meta.get("sys") and meta.get("name") and meta.get("emoji"))
+
+    def test_coin_base(self):
+        self.assertEqual(N._coin_base("BTC ⟢Earn"), "BTC")
+        self.assertEqual(N._coin_base("eth"), "ETH")
+
+    def test_reconcile_sans_cles_bitget(self):
+        import asyncio
+        old = (N.BITGET_KEY, N.BITGET_SECRET, N.BITGET_PASS)
+        try:
+            N.BITGET_KEY = N.BITGET_SECRET = N.BITGET_PASS = ""
+            r = asyncio.new_event_loop().run_until_complete(N.bitget_reconcile(None))
+            self.assertFalse(r["ok"])
+            self.assertTrue(any(f["niveau"] == "erreur" for f in r["findings"]))
+        finally:
+            N.BITGET_KEY, N.BITGET_SECRET, N.BITGET_PASS = old
+
+
 class TestPanneauDiscord(unittest.TestCase):
     """Discord limite chaque rangée d'un View à 5 boutons. Un 6e -> ValueError au
     démarrage, qui bloquait on_ready (panneau + tâches de fond). Garde-fou statique."""
