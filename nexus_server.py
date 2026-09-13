@@ -108,19 +108,39 @@ GEN_CMD = "python -c 'import secrets;print(secrets.token_urlsafe(32))'"
 # api.anthropic.com directement. Avant, la cle etait dans le navigateur (localStorage
 # + en-tete anthropic-dangerous-direct-browser-access) : une XSS, une extension ou un
 # acces a l'appareil l'exfiltrait, et elle facture le compte Anthropic sans plafond.
+# --- Fournisseur d'IA : "anthropic" (Claude) OU "openai" (compatible OpenAI :
+#     DeepSeek, OpenRouter, Groq, Together, Ollama local... = pas besoin de Claude). ---
+AI_PROVIDER       = (_conf("AI_PROVIDER") or "anthropic").lower()
 ANTHROPIC_API_KEY = _conf("ANTHROPIC_API_KEY") or _conf("CLAUDE_API_KEY")
 ANTHROPIC_URL     = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
 # fallbacks:"default" (repli serveur sur refus de politique) -> ce header exact.
 ANTHROPIC_BETA    = "server-side-fallback-2026-07-01"
-AI_MODEL          = _conf("AI_MODEL") or "claude-opus-5"
-# Modeles acceptes par le proxy (le client ne peut pas forcer un modele arbitraire).
+# --- Config du mode OpenAI-compatible ---
+# Base par defaut : DeepSeek. Exemples :
+#   DeepSeek    : https://api.deepseek.com          modele deepseek-chat
+#   OpenRouter  : https://openrouter.ai/api/v1      modele deepseek/deepseek-chat-v3.1:free (gratuit)
+#   Groq        : https://api.groq.com/openai/v1    modele llama-3.3-70b-versatile
+#   Ollama local: http://localhost:11434/v1         modele llama3.1  (aucune cle)
+AI_BASE_URL       = (_conf("AI_BASE_URL") or "https://api.deepseek.com").rstrip("/")
+AI_API_KEY        = _conf("AI_API_KEY") or _conf("DEEPSEEK_API_KEY") or _conf("OPENROUTER_API_KEY")
+AI_JSON_MODE      = (_conf("AI_JSON_MODE") or "1").lower() in ("1", "true", "yes")  # response_format json
+_def_model        = "deepseek-chat" if AI_PROVIDER == "openai" else "claude-opus-5"
+AI_MODEL          = _conf("AI_MODEL") or _def_model
+# Modeles acceptes par le proxy en mode Anthropic (le client ne force pas un modele arbitraire).
 AI_MODEL_ALLOW    = {"claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5",
                      "claude-opus-4-8", "claude-fable-5-1"}
 # Ces modeles gerent thinking adaptatif + output_config.effort (pas Haiku 4.5).
 AI_THINK_MODELS   = {"claude-opus-5", "claude-sonnet-5", "claude-opus-4-8", "claude-fable-5-1"}
 AI_MAX_TOKENS     = int(_conf("AI_MAX_TOKENS") or "8000")   # plafond de sortie du proxy
-AI_EFFORT         = (_conf("AI_EFFORT") or "high").lower()  # low|medium|high|xhigh|max
+AI_EFFORT         = (_conf("AI_EFFORT") or "high").lower()  # low|medium|high|xhigh|max (Anthropic)
+
+def ai_enabled():
+    """L'IA est-elle utilisable ? Anthropic -> cle Claude ; OpenAI-compatible -> cle
+    fournisseur, OU base locale (Ollama sans cle)."""
+    if AI_PROVIDER == "openai":
+        return bool(AI_API_KEY) or ("localhost" in AI_BASE_URL) or ("127.0.0.1" in AI_BASE_URL)
+    return bool(ANTHROPIC_API_KEY)
 AI_BRIEF_HOUR     = int(_conf("AI_BRIEF_HOUR") or "8")      # heure (WAT) du brief auto
 AI_BRIEF_EVERY    = int(_conf("AI_BRIEF_EVERY_DAYS") or "1")  # cadence en jours (1=quotidien)
 AI_BRIEF_AUTO     = (_conf("AI_BRIEF_AUTO") or "1").lower() in ("1", "true", "yes")
@@ -995,7 +1015,7 @@ async def h_health(request):
         "uptime": int(time.time()) - START_TS,
         "discord": bool(DISCORD_TOKEN and discord is not None),
         "bitget": bool(BITGET_KEY and BITGET_SECRET and BITGET_PASS),
-        "ia": bool(ANTHROPIC_API_KEY),
+        "ia": ai_enabled(),
         "auth": (not AUTH_WEAK),
         "persistance": ("upstash" if (UPSTASH_URL and UPSTASH_TOKEN and _UPSTASH_OK)
                         else ("upstash-degrade" if (UPSTASH_URL and UPSTASH_TOKEN) else "fichier")),
@@ -1921,6 +1941,158 @@ async def _anthropic_text(session, system, user, max_tokens=3000, model=None, ef
     return ""
 
 
+# ----------------------- Fournisseur OpenAI-compatible (DeepSeek, OpenRouter, Groq, Ollama...) -----------------------
+def _openai_url():
+    """URL du endpoint chat/completions a partir de AI_BASE_URL (regle simple et sure)."""
+    b = AI_BASE_URL
+    if b.endswith("/chat/completions"):
+        return b
+    return b + "/chat/completions"
+
+
+def _openai_headers():
+    h = {"content-type": "application/json"}
+    if AI_API_KEY:
+        h["Authorization"] = "Bearer " + AI_API_KEY
+    return h
+
+
+async def _openai_text(session, system, user, max_tokens=3000, want_json=True):
+    """Un appel non-stream vers une API compatible OpenAI -> texte de la reponse.
+    Reessaie sans response_format si le fournisseur ne le supporte pas."""
+    base = {"model": AI_MODEL, "max_tokens": min(int(max_tokens), AI_MAX_TOKENS),
+            "temperature": 0.4,
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
+    attempts = []
+    if want_json and AI_JSON_MODE:
+        attempts.append(dict(base, response_format={"type": "json_object"}))
+    attempts.append(base)
+    last_err = None
+    for payload in attempts:
+        try:
+            async with session.post(_openai_url(), json=payload, headers=_openai_headers(),
+                                    timeout=aiohttp.ClientTimeout(total=180)) as r:
+                data = await r.json()
+            if r.status >= 400:
+                last_err = (data.get("error") or {}).get("message") or ("HTTP %d" % r.status)
+                continue        # p.ex. response_format non supporte -> on retombe sur le payload nu
+            ch = (data.get("choices") or [{}])[0]
+            return ((ch.get("message") or {}).get("content")) or ""
+        except Exception as e:
+            last_err = str(e)
+    raise RuntimeError(last_err or "erreur fournisseur IA")
+
+
+async def _ai_text(session, system, user, max_tokens=3000, effort=None, want_json=True):
+    """Appel IA non-stream, agnostique du fournisseur (Anthropic OU OpenAI-compatible)."""
+    if AI_PROVIDER == "openai":
+        return await _openai_text(session, system, user, max_tokens=max_tokens, want_json=want_json)
+    return await _anthropic_text(session, system, user, max_tokens=max_tokens, effort=effort)
+
+
+def _flatten_content(c):
+    """Contenu d'un message (chaine, ou blocs facon Anthropic) -> chaine simple."""
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        return "".join(b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text")
+    return str(c or "")
+
+
+async def _openai_proxy(request, body, session):
+    """Relaie le chat de l'app vers une API compatible OpenAI, en TRADUISANT :
+       - la requete (system+messages facon Anthropic) -> chat/completions ;
+       - le flux SSE OpenAI -> evenements SSE facon Anthropic que l'app sait lire.
+    Ainsi l'app et sa boucle de streaming restent inchangees quel que soit le fournisseur."""
+    system = body.get("system")
+    omsgs = []
+    if system:
+        omsgs.append({"role": "system", "content": _flatten_content(system)})
+    for m in (body.get("messages") or []):
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role", "user")
+        if role not in ("user", "assistant", "system"):
+            role = "user"
+        omsgs.append({"role": role, "content": _flatten_content(m.get("content"))})
+    try:
+        max_tok = min(int(body.get("max_tokens") or AI_MAX_TOKENS), AI_MAX_TOKENS)
+    except Exception:
+        max_tok = AI_MAX_TOKENS
+    want_stream = bool(body.get("stream"))
+    payload = {"model": AI_MODEL, "messages": omsgs, "max_tokens": max_tok,
+               "temperature": 0.4, "stream": want_stream}
+    fin_map = {"length": "max_tokens", "stop": "end_turn", "content_filter": "refusal"}
+
+    if not want_stream:
+        async with session.post(_openai_url(), json=payload, headers=_openai_headers(),
+                                timeout=aiohttp.ClientTimeout(total=180)) as up:
+            data = await up.json()
+            status = up.status
+        if status >= 400:
+            msg = (data.get("error") or {}).get("message") or ("HTTP %d" % status)
+            return cors(web.json_response({"error": {"message": msg}}, status=status), request)
+        ch = (data.get("choices") or [{}])[0]
+        txt = ((ch.get("message") or {}).get("content")) or ""
+        # Forme Anthropic -> claudeText() cote app fonctionne a l'identique.
+        return cors(web.json_response({"content": [{"type": "text", "text": txt}],
+                                       "stop_reason": "end_turn"}), request)
+
+    up = await session.post(_openai_url(), json=payload, headers=_openai_headers(),
+                            timeout=aiohttp.ClientTimeout(total=180))
+    resp = web.StreamResponse(status=(200 if up.status < 400 else up.status))
+    resp.headers["Content-Type"] = "text/event-stream"
+    cors(resp, request)
+    await resp.prepare(request)
+
+    async def emit(obj):
+        await resp.write(("data: " + json.dumps(obj, ensure_ascii=False) + "\n\n").encode("utf-8"))
+
+    try:
+        if up.status >= 400:
+            try:
+                data = await up.json()
+                msg = (data.get("error") or {}).get("message") or ("HTTP %d" % up.status)
+            except Exception:
+                msg = "HTTP %d" % up.status
+            await emit({"type": "error", "error": {"message": msg}})
+            await resp.write_eof()
+            return resp
+        buf = ""
+        async for chunk in up.content.iter_any():
+            buf += chunk.decode("utf-8", "replace")
+            while "\n" in buf:
+                line, buf = buf.split("\n", 1)
+                line = line.strip()
+                if not line or not line.startswith("data:"):
+                    continue
+                ds = line[5:].strip()
+                if ds == "[DONE]":
+                    continue
+                try:
+                    ev = json.loads(ds)
+                except Exception:
+                    continue
+                ch = (ev.get("choices") or [{}])[0]
+                delta = ch.get("delta") or {}
+                piece = delta.get("content")
+                if piece:
+                    await emit({"type": "content_block_delta", "delta": {"type": "text_delta", "text": piece}})
+                fr = ch.get("finish_reason")
+                if fr:
+                    await emit({"type": "message_delta", "delta": {"stop_reason": fin_map.get(fr, "end_turn")}})
+        await resp.write_eof()
+    except Exception as e:
+        try:
+            await emit({"type": "error", "error": {"message": str(e)}})
+            await resp.write_eof()
+        except Exception:
+            pass
+    finally:
+        up.release()
+    return resp
+
+
 def _parse_agent_json(text):
     """Extrait l'objet JSON d'une reponse d'agent, defensivement (le modele peut
     parfois entourer le JSON de texte ou d'un bloc de code)."""
@@ -1951,7 +2123,7 @@ async def run_agent(session, key, question="", snap=None):
     if question:
         user += "\n\nQuestion prioritaire de l'utilisateur : " + question
     try:
-        txt = await _anthropic_text(session, meta["sys"], user, max_tokens=2500)
+        txt = await _ai_text(session, meta["sys"], user, max_tokens=2500)
         obj = _parse_agent_json(txt)
     except Exception as e:
         log.warning("agent %s: %s", key, e)
@@ -1964,8 +2136,8 @@ async def run_agent(session, key, question="", snap=None):
 
 async def run_all_agents(session, question=""):
     """Lance les 4 agents en parallele + une synthese globale des priorites."""
-    if not ANTHROPIC_API_KEY:
-        return {"ok": False, "error": "IA non configuree (ANTHROPIC_API_KEY absent)."}
+    if not ai_enabled():
+        return {"ok": False, "error": "IA non configuree (definir la cle du fournisseur : ANTHROPIC_API_KEY, ou AI_PROVIDER=openai + AI_API_KEY)."}
     snap = finance_snapshot()
     results = await asyncio.gather(*[run_agent(session, k, question, snap) for k in AGENT_ORDER])
     agents = list(results)
@@ -1984,7 +2156,7 @@ async def run_all_agents(session, question=""):
                  "Tu produis un plan d'action unique et priorise. " + _AGENT_JSON_RULE
                  + " Le champ 'recommandations' contient les 3 a 5 actions les PLUS importantes, tous agents confondus.")
         try:
-            txt = await _anthropic_text(session, sys_p,
+            txt = await _ai_text(session, sys_p,
                                         "Recommandations des agents :\n" + "\n".join(digest)
                                         + "\n\nSituation :\n" + snap, max_tokens=2000)
             synth = _parse_agent_json(txt)
@@ -2069,9 +2241,9 @@ async def h_ai(request):
     denied = guard(request)
     if denied is not None:
         return denied
-    if not ANTHROPIC_API_KEY:
+    if not ai_enabled():
         return cors(web.json_response(
-            {"error": {"message": "IA non configuree : ajoute ANTHROPIC_API_KEY dans les variables du serveur."}},
+            {"error": {"message": "IA non configuree : definis ANTHROPIC_API_KEY, ou AI_PROVIDER=openai + AI_API_KEY (DeepSeek, OpenRouter...)."}},
             status=503), request)
     raw = await request.content.read(300001)
     if len(raw) > 300000:
@@ -2082,6 +2254,15 @@ async def h_ai(request):
         return cors(web.json_response({"error": {"message": "JSON invalide."}}, status=400), request)
     if not isinstance(body, dict) or not isinstance(body.get("messages"), list):
         return cors(web.json_response({"error": {"message": "Corps attendu : {messages:[...]}."}}, status=400), request)
+    session = request.app["session"]
+    # Fournisseur OpenAI-compatible (DeepSeek, OpenRouter, Groq, Ollama...) : on traduit.
+    if AI_PROVIDER == "openai":
+        try:
+            return await _openai_proxy(request, body, session)
+        except Exception as e:
+            log.warning("proxy /ai (openai): %s", e)
+            return cors(web.json_response({"error": {"message": "Relais IA indisponible : %s" % e}}, status=502), request)
+    # ---- Anthropic ----
     # Le client ne choisit pas librement le modele ni la taille de sortie.
     model = body.get("model") if body.get("model") in AI_MODEL_ALLOW else AI_MODEL
     body["model"] = model
@@ -2121,8 +2302,8 @@ async def h_agents(request):
     denied = guard(request)
     if denied is not None:
         return denied
-    if not ANTHROPIC_API_KEY:
-        return cors(web.json_response({"ok": False, "error": "IA non configuree (ANTHROPIC_API_KEY absent)."},
+    if not ai_enabled():
+        return cors(web.json_response({"ok": False, "error": "IA non configuree (definir la cle du fournisseur : ANTHROPIC_API_KEY, ou AI_PROVIDER=openai + AI_API_KEY)."},
                                       status=503), request)
     body = {}
     if request.method == "POST":
@@ -2670,11 +2851,11 @@ if discord is not None:
     async def agents_scheduler(client):
         """Brief d'optimisations IA automatique : a AI_BRIEF_HOUR (heure Bénin), tous les
         AI_BRIEF_EVERY jours, poste le plan d'action des 4 agents dans le salon rapports.
-        Désactivable via AI_BRIEF_AUTO=0. Ne fait rien sans ANTHROPIC_API_KEY."""
+        Désactivable via AI_BRIEF_AUTO=0. Ne fait rien si l'IA n'est pas configurée."""
         await client.wait_until_ready()
         while not client.is_closed():
             try:
-                if AI_BRIEF_AUTO and ANTHROPIC_API_KEY:
+                if AI_BRIEF_AUTO and ai_enabled():
                     now = now_wat()
                     if now.hour >= AI_BRIEF_HOUR:
                         today = now.date()
@@ -2958,9 +3139,9 @@ if discord is not None:
         @discord.ui.button(label="Optimisations IA", emoji="🧠",
                            style=discord.ButtonStyle.primary, custom_id="nexus:optim", row=1)
         async def b_optim(self, interaction, button):
-            if not ANTHROPIC_API_KEY:
+            if not ai_enabled():
                 await interaction.response.send_message(
-                    "🧠 IA non configurée : ajoute **ANTHROPIC_API_KEY** aux variables du serveur.", ephemeral=True)
+                    "🧠 IA non configurée : définis **ANTHROPIC_API_KEY**, ou **AI_PROVIDER=openai** + **AI_API_KEY** (DeepSeek/OpenRouter...).", ephemeral=True)
                 return
             await interaction.response.defer(ephemeral=True, thinking=True)
             try:
@@ -3296,9 +3477,9 @@ async def run_discord(http_session):
     @tree.command(name="optim", description="Optimisations IA : plan d'action sur tes finances (5 agents)")
     @discord.app_commands.describe(agent="Cibler un agent : patrimoine, depenses, epargne, invest, objectifs (vide = tous)")
     async def _cmd_optim(interaction, agent: str = ""):
-        if not ANTHROPIC_API_KEY:
+        if not ai_enabled():
             await interaction.response.send_message(
-                "🧠 IA non configurée : ajoute **ANTHROPIC_API_KEY** aux variables du serveur.", ephemeral=True)
+                "🧠 IA non configurée : définis **ANTHROPIC_API_KEY**, ou **AI_PROVIDER=openai** + **AI_API_KEY** (DeepSeek/OpenRouter...).", ephemeral=True)
             return
         await interaction.response.defer(thinking=True)
         key = (agent or "").strip().lower()
@@ -3537,7 +3718,7 @@ async def main():
     print(" - Discord import   :", DISCORD_CHANNEL or "non configure")
     print(" - Discord panneau  :", PANEL_CHANNEL or "non configure")
     print(" - OCR (ocr.space)  :", "OK" if OCR_API_KEY else "non configure")
-    print(" - IA / Agents      :", ("OK (%s)" % AI_MODEL) if ANTHROPIC_API_KEY else "non configure (ANTHROPIC_API_KEY)")
+    print(" - IA / Agents      :", ("OK (%s via %s)" % (AI_MODEL, AI_PROVIDER)) if ai_enabled() else "non configure (definir la cle du fournisseur)")
     print(" - Proxy Bitget     :", "LECTURE+ECRITURE (!)" if BITGET_ALLOW_WRITE else "lecture seule")
     print(" - Historique MoMo  :", MOMO_MAX, "operations max")
     print("=" * 58)

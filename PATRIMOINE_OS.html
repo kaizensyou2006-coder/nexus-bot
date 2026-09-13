@@ -1195,8 +1195,8 @@ textarea.cinp::placeholder{color:var(--t3);}
         </div>
       </div>
       <div class="card mb" style="border-color:rgba(155,110,248,.18)">
-        <div class="ch" style="color:var(--pu)">🤖 Claude IA</div>
-        <p style="font-size:12px;color:var(--t2);margin-bottom:10px">Recommandé : la clé Claude vit <strong>côté serveur NEXUS</strong> (variable <code>ANTHROPIC_API_KEY</code>). L'app appelle le proxy sécurisé du serveur — la clé ne transite plus par le navigateur. Le champ ci-dessous n'est utile qu'en usage <strong>hors-ligne</strong> (sans serveur) ; obtenez une clé sur <a href="https://console.anthropic.com" target="_blank" style="color:var(--blu)">console.anthropic.com</a>.</p>
+        <div class="ch" style="color:var(--pu)">🤖 IA (Claude ou DeepSeek…)</div>
+        <p style="font-size:12px;color:var(--t2);margin-bottom:10px">L'IA est gérée <strong>côté serveur NEXUS</strong> — la clé ne transite plus par le navigateur. Choisissez le fournisseur sur le serveur : <strong>Claude</strong> (<code>ANTHROPIC_API_KEY</code>) ou une API <strong>compatible OpenAI</strong> sans Claude — <strong>DeepSeek, OpenRouter (gratuit), Groq, Ollama local</strong> (<code>AI_PROVIDER=openai</code> + <code>AI_BASE_URL</code> + <code>AI_API_KEY</code>). Détails dans <code>DEPLOY.md</code>. Le champ ci-dessous ne sert qu'en usage <strong>hors-ligne</strong> (sans serveur), avec une clé Claude.</p>
         <div style="display:flex;gap:7px;flex-wrap:wrap;align-items:center">
           <input type="password" class="fi" id="cf-ai-key" placeholder="sk-ant-api03-…  (optionnel, hors-ligne)" style="flex:1;min-width:160px;font-family:var(--fm);font-size:12px">
           <button class="btn btn-gold btn-sm" onclick="saveAIKey()">Sauvegarder</button>

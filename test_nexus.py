@@ -327,5 +327,41 @@ class TestObjectifsEtActions(unittest.TestCase):
         self.assertIn("DÉPASSÉ", N._objectifs_block())
 
 
+class TestFournisseurIA(unittest.TestCase):
+    """Le fournisseur d'IA est configurable : Anthropic OU compatible OpenAI (DeepSeek...)."""
+
+    def test_openai_url_construite(self):
+        old = N.AI_BASE_URL
+        try:
+            N.AI_BASE_URL = "https://api.deepseek.com"
+            self.assertEqual(N._openai_url(), "https://api.deepseek.com/chat/completions")
+            N.AI_BASE_URL = "https://openrouter.ai/api/v1"
+            self.assertEqual(N._openai_url(), "https://openrouter.ai/api/v1/chat/completions")
+            N.AI_BASE_URL = "http://localhost:11434/v1/chat/completions"   # deja complet
+            self.assertEqual(N._openai_url(), "http://localhost:11434/v1/chat/completions")
+        finally:
+            N.AI_BASE_URL = old
+
+    def test_flatten_content(self):
+        self.assertEqual(N._flatten_content("bonjour"), "bonjour")
+        self.assertEqual(N._flatten_content([{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]), "ab")
+
+    def test_ai_enabled_selon_fournisseur(self):
+        old_p, old_a, old_k, old_b = N.AI_PROVIDER, N.ANTHROPIC_API_KEY, N.AI_API_KEY, N.AI_BASE_URL
+        try:
+            N.AI_PROVIDER = "anthropic"; N.ANTHROPIC_API_KEY = ""
+            self.assertFalse(N.ai_enabled())
+            N.ANTHROPIC_API_KEY = "sk-ant-xxx"
+            self.assertTrue(N.ai_enabled())
+            N.AI_PROVIDER = "openai"; N.AI_API_KEY = ""; N.AI_BASE_URL = "https://api.deepseek.com"
+            self.assertFalse(N.ai_enabled())          # cle fournisseur requise
+            N.AI_API_KEY = "sk-deepseek"
+            self.assertTrue(N.ai_enabled())
+            N.AI_API_KEY = ""; N.AI_BASE_URL = "http://localhost:11434/v1"
+            self.assertTrue(N.ai_enabled())           # Ollama local : aucune cle
+        finally:
+            N.AI_PROVIDER, N.ANTHROPIC_API_KEY, N.AI_API_KEY, N.AI_BASE_URL = old_p, old_a, old_k, old_b
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
