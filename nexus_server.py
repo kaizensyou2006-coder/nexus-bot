@@ -3580,9 +3580,16 @@ if discord is not None:
                 dv = hist[-1]["total"] - hist[-2]["total"]
                 trend = "  ·  %s%s vs hier" % ("+" if dv >= 0 else "−", fmt_xof(abs(dv)))
             spark = sparkline([p["total"] for p in hist[-14:]]) if len(hist) >= 2 else ""
+            # Détail par composant + drapeau de fiabilité (solde réel vs estimé) : rend
+            # visible d'où vient le total, pour repérer tout de suite un chiffre gonflé.
+            srcs = momo_balance_sources()
+            momo_est = any(v == "flux" for v in srcs.values())
+            flag = " ⚠️ estimé (pas de solde capturé récent)" if momo_est else ""
+            detail = ("📱 MoMo **%s**%s · 🏛 NSIA **%s** · 📈 Bitget **%s**"
+                      % (fmt_xof(c["momo"]), flag, fmt_xof(c["nsia"]), fmt_usd(c["bitget_usd"])))
             emb.add_field(name="💰 Patrimoine actuel",
-                          value="**%s**%s%s" % (fmt_xof(c["total"]), trend,
-                                                ("\n`%s` (14 j)" % spark) if spark else ""),
+                          value="**%s**%s\n%s%s" % (fmt_xof(c["total"]), trend, detail,
+                                                    ("\n`%s` (14 j)" % spark) if spark else ""),
                           inline=False)
         except Exception as _e:
             log.warning("panel resume: %s", _e)
@@ -3805,6 +3812,35 @@ async def run_discord(http_session):
             STATE["nsia"] = ns
             save_state()
         await interaction.response.send_message(embed=build_nsia_embed(), ephemeral=True)
+
+    @tree.command(name="soldemomo", description="Corriger ton solde Mobile Money si le chiffre affiché est faux (FCFA)")
+    @discord.app_commands.describe(mtn="Solde réel MTN MoMo en FCFA (laisser vide pour ne pas toucher)",
+                                   moov="Solde réel Moov Money en FCFA (laisser vide pour ne pas toucher)")
+    async def _cmd_soldemomo(interaction, mtn: float = -1.0, moov: float = -1.0):
+        # Corrige à la main le SOLDE capturé (photo du compte). momo_balance_by_net l'utilise
+        # alors comme vérité + seules les opérations POSTÉRIEURES. C'est le fix déterministe
+        # d'un total gonflé par un mauvais solde ou une somme de flux sans capture.
+        changed = []
+        now = int(time.time() * 1000)
+        bal = STATE.setdefault("balances", {})
+        if mtn >= 0:
+            bal["mtn"] = {"amount": float(mtn), "ts": now}; changed.append("MTN → %s" % fmt_xof(mtn))
+        if moov >= 0:
+            bal["moov"] = {"amount": float(moov), "ts": now}; changed.append("Moov → %s" % fmt_xof(moov))
+        if not changed:
+            await interaction.response.send_message(
+                "Donne au moins `mtn:` ou `moov:` (en FCFA). Ex : `/soldemomo mtn:50000 moov:12000`.\n"
+                "Astuce : une **capture d'accueil MTN/Moov** déposée dans le salon d'import fait pareil, automatiquement.",
+                ephemeral=True)
+            return
+        # purge les vieux drapeaux d'alerte (le total change volontairement)
+        STATE["alert_flags"] = {}
+        save_state()
+        c = consolidated_total()
+        await interaction.response.send_message(
+            "✅ Solde MoMo corrigé : %s.\nNouveau patrimoine consolidé : **%s** (📱 %s · 🏛 %s · 📈 %s)."
+            % (", ".join(changed), fmt_xof(c["total"]), fmt_xof(c["momo"]), fmt_xof(c["nsia"]), fmt_usd(c["bitget_usd"])),
+            ephemeral=True)
 
     @tree.command(name="etat", description="État du serveur NEXUS (uptime, Discord, données)")
     async def _cmd_etat(interaction):
