@@ -237,5 +237,142 @@ class TestProxyBitget(unittest.TestCase):
             self.assertFalse(any(dangereux.startswith(p) for p in N.BITGET_READ_PATHS), dangereux)
 
 
+class TestAgentsIA(unittest.TestCase):
+    """Le moteur d'agents : construction de la photo chiffree + parsing des reponses.
+    (Les appels reseau a Claude ne sont pas testes ici : logique deterministe seulement.)"""
+
+    def setUp(self):
+        reset()
+
+    def test_finance_snapshot_contient_les_postes(self):
+        N.STATE["balances"] = {"mtn": {"amount": 100000, "ts": 0}}
+        N.STATE["nsia"] = {"total": 218248, "invested": 200000, "pv_latente": 18248}
+        N.STATE["bitget"] = {"total": 500, "holdings": [{"coin": "BTC", "val": 400},
+                                                        {"coin": "ETH", "val": 100}]}
+        N._USD_XOF_LIVE = 600.0
+        snap = N.finance_snapshot()
+        self.assertIn("PATRIMOINE", snap)
+        self.assertIn("NSIA", snap)
+        self.assertIn("BTC", snap)                 # position Bitget listee
+        self.assertIn("FLUX MOBILE MONEY", snap)   # les fenetres glissantes
+
+    def test_parse_agent_json_direct(self):
+        obj = N._parse_agent_json('{"score": 72, "resume": "ok", "recommandations": []}')
+        self.assertEqual(obj["score"], 72)
+
+    def test_parse_agent_json_avec_bloc_de_code(self):
+        txt = "```json\n{\"score\": 40, \"resume\": \"x\", \"recommandations\": []}\n```"
+        self.assertEqual(N._parse_agent_json(txt)["score"], 40)
+
+    def test_parse_agent_json_entoure_de_texte(self):
+        txt = "Voici mon analyse : {\"score\": 55, \"recommandations\": []} — fin."
+        self.assertEqual(N._parse_agent_json(txt)["score"], 55)
+
+    def test_parse_agent_json_illisible_ne_leve_pas(self):
+        obj = N._parse_agent_json("pas du tout du json")
+        self.assertIn("recommandations", obj)      # repli structure, jamais d'exception
+        self.assertEqual(obj["recommandations"], [])
+
+    def test_agents_definis(self):
+        self.assertEqual(set(N.AGENT_ORDER), set(N.AGENTS.keys()))
+        self.assertIn("objectifs", N.AGENTS)          # 5e agent
+        for meta in N.AGENTS.values():
+            self.assertTrue(meta.get("sys") and meta.get("name") and meta.get("emoji"))
+
+
+class TestObjectifsEtActions(unittest.TestCase):
+    def setUp(self):
+        reset()
+        N.STATE["objectifs"] = None
+        N.STATE["catexp"] = None
+        N.STATE["ai_snaps"] = []
+        N.STATE["ai_actions"] = []
+
+    def test_sanitize_objectifs_borne_et_typé(self):
+        o = N.sanitize_objectifs({"cur": "XOF",
+            "budgets": [{"cat": "Loisirs", "limit": "50000", "spent": 61000}],
+            "goals": [{"name": "Urgence", "current": 300000, "target": 1000000, "deadline": "2026-12-31"}],
+            "dcas": [{"asset": "BTC", "amount": 20000, "freq": "Mensuel", "auto": True}]})
+        self.assertEqual(o["budgets"][0]["limit"], 50000)
+        self.assertEqual(o["goals"][0]["target"], 1000000)
+        self.assertTrue(o["dcas"][0]["auto"])
+
+    def test_clean_action_valide_et_rejette(self):
+        self.assertIsNone(N._clean_action({"type": "achat", "actif": "BTC"}))         # type interdit
+        self.assertIsNone(N._clean_action({"type": "budget", "categorie": "X"}))      # montant manquant
+        a = N._clean_action({"type": "budget", "categorie": "Loisirs", "montant": 45000})
+        self.assertEqual(a["type"], "budget")
+        self.assertIn("label", a)
+
+    def test_collect_actions_dedoublonne(self):
+        data = {"synthese": {"recommandations": [
+                    {"titre": "x", "action": {"type": "budget", "categorie": "Loisirs", "montant": 45000}}]},
+                "agents": [{"recommandations": [
+                    {"titre": "y", "action": {"type": "budget", "categorie": "Loisirs", "montant": 45000}},  # doublon
+                    {"titre": "z", "action": {"type": "dca", "actif": "BTC", "montant": 20000, "frequence": "Mensuel"}}]}]}
+        acts = N.collect_actions(data)
+        self.assertEqual(len(acts), 2)               # le doublon budget est fusionné
+
+    def test_memoire_evolution_par_categorie(self):
+        N.STATE["ai_snaps"] = [{"d": "2000-01-01", "total": 1000000, "exp30": 200000,
+                                "expM": 180000, "revM": 300000,
+                                "catexp": {"Loisirs": 50000}}]
+        N.STATE["catexp"] = {"Loisirs": 61000}
+        bloc = N._evolution_block()
+        self.assertIn("Loisirs", bloc)
+        self.assertIn("+22%", bloc)                  # 50k -> 61k
+
+    def test_objectifs_block_signale_depassement(self):
+        N.STATE["objectifs"] = N.sanitize_objectifs({"budgets": [{"cat": "Loisirs", "limit": 50000, "spent": 61000}]})
+        self.assertIn("DÉPASSÉ", N._objectifs_block())
+
+
+class TestFournisseurIA(unittest.TestCase):
+    """Le fournisseur d'IA est configurable : Anthropic OU compatible OpenAI (DeepSeek...)."""
+
+    def test_openai_url_construite(self):
+        old = N.AI_BASE_URL
+        try:
+            N.AI_BASE_URL = "https://api.deepseek.com"
+            self.assertEqual(N._openai_url(), "https://api.deepseek.com/chat/completions")
+            N.AI_BASE_URL = "https://openrouter.ai/api/v1"
+            self.assertEqual(N._openai_url(), "https://openrouter.ai/api/v1/chat/completions")
+            N.AI_BASE_URL = "http://localhost:11434/v1/chat/completions"   # deja complet
+            self.assertEqual(N._openai_url(), "http://localhost:11434/v1/chat/completions")
+        finally:
+            N.AI_BASE_URL = old
+
+    def test_parse_json_accolade_dupliquee(self):
+        # Sortie malformee constatee sur un modele gratuit : '{' en double au debut.
+        brut = '{\n{\n  "score": 82, "resume": "ok", "recommandations": [{"titre": "T"}]}'
+        obj = N._parse_agent_json(brut)
+        self.assertEqual(obj.get("score"), 82)
+        self.assertEqual(obj["recommandations"][0]["titre"], "T")
+
+    def test_parse_json_avec_texte_autour(self):
+        obj = N._parse_agent_json('Voici le JSON : {"score": 5, "recommandations": []} merci')
+        self.assertEqual(obj.get("score"), 5)
+
+    def test_flatten_content(self):
+        self.assertEqual(N._flatten_content("bonjour"), "bonjour")
+        self.assertEqual(N._flatten_content([{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]), "ab")
+
+    def test_ai_enabled_selon_fournisseur(self):
+        old_p, old_a, old_k, old_b = N.AI_PROVIDER, N.ANTHROPIC_API_KEY, N.AI_API_KEY, N.AI_BASE_URL
+        try:
+            N.AI_PROVIDER = "anthropic"; N.ANTHROPIC_API_KEY = ""
+            self.assertFalse(N.ai_enabled())
+            N.ANTHROPIC_API_KEY = "sk-ant-xxx"
+            self.assertTrue(N.ai_enabled())
+            N.AI_PROVIDER = "openai"; N.AI_API_KEY = ""; N.AI_BASE_URL = "https://api.deepseek.com"
+            self.assertFalse(N.ai_enabled())          # cle fournisseur requise
+            N.AI_API_KEY = "sk-deepseek"
+            self.assertTrue(N.ai_enabled())
+            N.AI_API_KEY = ""; N.AI_BASE_URL = "http://localhost:11434/v1"
+            self.assertTrue(N.ai_enabled())           # Ollama local : aucune cle
+        finally:
+            N.AI_PROVIDER, N.ANTHROPIC_API_KEY, N.AI_API_KEY, N.AI_BASE_URL = old_p, old_a, old_k, old_b
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
