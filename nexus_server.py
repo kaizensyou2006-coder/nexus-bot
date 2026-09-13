@@ -144,6 +144,8 @@ def ai_enabled():
 AI_BRIEF_HOUR     = int(_conf("AI_BRIEF_HOUR") or "8")      # heure (WAT) du brief auto
 AI_BRIEF_EVERY    = int(_conf("AI_BRIEF_EVERY_DAYS") or "1")  # cadence en jours (1=quotidien)
 AI_BRIEF_AUTO     = (_conf("AI_BRIEF_AUTO") or "1").lower() in ("1", "true", "yes")
+# Rafraîchissement auto du panneau (patrimoine + prix Bitget). 60 s par défaut, 0 = désactivé.
+PANEL_REFRESH_SEC = int(_conf("PANEL_REFRESH_SEC") or "60")
 
 # Session HTTP partagee (definie au demarrage) — utilisee par le bot Discord pour Bitget/OCR.
 HTTP_SESSION = None
@@ -3089,6 +3091,23 @@ if discord is not None:
                 log.warning("keepalive: %s", e)
             await asyncio.sleep(600)
 
+    async def panel_refresh_scheduler(client):
+        """Actualise le panneau (patrimoine + prix Bitget en direct) toutes les
+        PANEL_REFRESH_SEC secondes tant que l'instance est éveillée. 0 = désactivé.
+        Édite le message en place (pas de spam). Sur le plan gratuit, l'instance dort
+        après ~15 min d'inactivité : le rafraîchissement reprend au réveil."""
+        if PANEL_REFRESH_SEC <= 0:
+            return
+        await client.wait_until_ready()
+        while not client.is_closed():
+            await asyncio.sleep(max(30, PANEL_REFRESH_SEC))   # plancher 30 s (API/quota)
+            try:
+                if PANEL_CHANNEL and str(PANEL_CHANNEL).isdigit():
+                    await refresh_bitget_state(HTTP_SESSION)   # prix Bitget frais avant le total
+                    await post_or_update_panel(client)
+            except Exception as e:
+                log.warning("panel_refresh: %s", e)
+
     async def agents_scheduler(client):
         """Brief d'optimisations IA automatique : a AI_BRIEF_HOUR (heure Bénin), tous les
         AI_BRIEF_EVERY jours, poste le plan d'action des 4 agents dans le salon rapports.
@@ -3970,7 +3989,9 @@ async def run_discord(http_session):
             asyncio.create_task(history_scheduler(client))
             asyncio.create_task(keepalive_task())
             asyncio.create_task(agents_scheduler(client))
-            log.info("tâches de fond démarrées : récaps auto + historique/alertes + keep-alive + brief IA")
+            asyncio.create_task(panel_refresh_scheduler(client))
+            log.info("tâches de fond démarrées : récaps auto + historique/alertes + keep-alive + brief IA"
+                     + (" + panneau/%ds" % PANEL_REFRESH_SEC if PANEL_REFRESH_SEC > 0 else ""))
 
     @client.event
     async def on_message(message):
