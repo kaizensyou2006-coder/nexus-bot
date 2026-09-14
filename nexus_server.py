@@ -765,6 +765,14 @@ def momo_ingest_text(text, src="sms"):
     if any(x == text for (_, x) in _recent_raw):
         return 0
     _recent_raw.append((now, text))
+    # Releve NSIA prioritaire (il ne se declenche que sur de vrais marqueurs NSIA/OPCVM ;
+    # verifie : None sur un releve MoMo). Sinon on aurait pris une ligne "Souscription"
+    # pour une operation MoMo et saute la mise a jour NSIA.
+    ns = parse_nsia(text)
+    if ns:
+        set_nsia(ns)
+        log.info("NSIA capture via /momo: %s", fmt_xof(ns.get("total", 0)))
+        return 0
     items = parse_momo_text(text)
     for it in items:
         it["src"] = src
@@ -777,12 +785,6 @@ def momo_ingest_text(text, src="sms"):
         STATE["alert_flags"] = {}          # le total change volontairement
         save_state()
         log.info("solde %s capture via /momo: %s", net, fmt_xof(val))
-    # Releve NSIA (uniquement si ce n'est pas un releve MoMo avec des operations).
-    if not items:
-        ns = parse_nsia(text)
-        if ns:
-            set_nsia(ns)
-            log.info("NSIA capture via /momo: %s", fmt_xof(ns.get("total", 0)))
     if not n and not bal:
         log.info("texte recu mais aucun montant/solde detecte: %r", text[:120])
     return n
