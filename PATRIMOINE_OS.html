@@ -150,8 +150,11 @@ body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;bac
 .an-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(178px,1fr));gap:14px;margin-bottom:18px}
 .an-tile{background:var(--card);border:1px solid var(--border);border-radius:var(--r12);padding:15px 16px;position:relative;overflow:hidden;min-width:0}
 .an-tile::after{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--tc,var(--g));opacity:.85}
-.an-tl{font-size:9px;letter-spacing:1.6px;text-transform:uppercase;color:var(--t2);font-family:var(--fm);overflow-wrap:anywhere}
-.an-tv{font-family:var(--fn);font-size:clamp(18px,2vw,22px);font-weight:800;color:var(--t0);margin:7px 0 3px;line-height:1.12;letter-spacing:-.5px;overflow-wrap:anywhere}
+.an-tl{font-size:9px;letter-spacing:1.6px;text-transform:uppercase;color:var(--t2);font-family:var(--fm);overflow-wrap:break-word}
+/* Le nombre ne doit JAMAIS se couper en plein milieu : on garde la valeur d'un bloc
+   (letter-spacing serré + taille adaptative) pour qu'elle tienne, "FCFA" passant à la ligne. */
+.an-tv{font-family:var(--fn);font-size:clamp(16px,1.55vw,21px);font-weight:800;color:var(--t0);margin:7px 0 3px;line-height:1.15;letter-spacing:-.7px;overflow-wrap:normal;word-break:keep-all;hyphens:none}
+.an-tv .u{font-size:.62em;color:var(--t2);font-weight:700}
 .an-th{font-size:10.5px;color:var(--t1);line-height:1.45}
 .an-spark{height:30px;margin-top:9px;position:relative}
 .ch-note{font-family:var(--fb);font-size:11px;font-weight:400;color:var(--t2);letter-spacing:0;margin-left:8px}
