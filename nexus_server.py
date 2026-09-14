@@ -662,6 +662,12 @@ def detect_balance(text):
     val = _eur(m.group(1))
     if val <= 0:
         return None
+    # Garde-fou : un solde Mobile Money au-dela du plafond de plausibilite est
+    # presque surement une reference/un mauvais OCR. On REFUSE (pas de mise a jour du
+    # solde) plutot que de gonfler le patrimoine.
+    if val > MOMO_BALANCE_MAX:
+        log.warning("solde MoMo aberrant ignore: %.0f (> %d)", val, MOMO_BALANCE_MAX)
+        return None
     return detect_network(text), val
 
 def _emit_ops(parsed, net="mtn"):
@@ -730,6 +736,10 @@ def add_momo(items):
     return n
 
 MOMO_MAX = int(_conf("MOMO_MAX") or "5000")   # operations conservees (~3 ans)
+# Plafond de PLAUSIBILITE d'un solde Mobile Money capture. Un nombre au-dela (ex. une
+# reference de transaction ou un mauvais OCR lu comme un solde) est REFUSE au lieu de
+# gonfler le patrimoine (bug constate : un "161 281 445" capture comme solde MTN).
+MOMO_BALANCE_MAX = int(_conf("MOMO_BALANCE_MAX") or "30000000")   # 30 M FCFA
 
 _recent_raw = []  # [(ts, texte)] dedup des SMS bruts recus dans les 5 dernieres minutes
 
@@ -3357,10 +3367,14 @@ if discord is not None:
             await asyncio.sleep(3600)
 
     async def keepalive_task():
-        """Auto-ping du service toutes les 10 min pour limiter le spin-down Render
-        (plan gratuit). Complément du ping externe cron-job.org (voir DEPLOY.md)."""
+        """Auto-ping du service toutes les ~4 min : un aller-retour HTTP sur PUBLIC_URL
+        compte comme trafic ENTRANT et repousse le spin-down Render (seuil ~15 min).
+        Tant que le process tourne, ça le garde éveillé -> moins de « n'a pas répondu à
+        temps » sur les boutons. Ne réveille pas une instance DÉJÀ endormie : pour ça,
+        garder le ping externe cron-job.org (voir DEPLOY.md) ou passer en payant."""
         if not PUBLIC_URL:
             return
+        interval = int(_conf("KEEPALIVE_SEC") or "240")
         while True:
             try:
                 async with HTTP_SESSION.get(PUBLIC_URL + "/ping",
@@ -3368,7 +3382,7 @@ if discord is not None:
                     await r.read()
             except Exception as e:
                 log.warning("keepalive: %s", e)
-            await asyncio.sleep(600)
+            await asyncio.sleep(max(60, interval))
 
     async def panel_refresh_scheduler(client):
         """Actualise le panneau (patrimoine + prix Bitget en direct) toutes les

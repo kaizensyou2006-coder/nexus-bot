@@ -77,6 +77,16 @@ class TestSmsMoMo(unittest.TestCase):
         self.assertEqual(N.detect_network("Transaction Moov Money reussie"), "moov")
         self.assertEqual(N.detect_network("MTN MoMo"), "mtn")
 
+    def test_solde_capture_plausible_accepte(self):
+        r = N.detect_balance("MTN MoMo\nSolde: 340 500 FCFA")
+        self.assertIsNotNone(r)
+        self.assertEqual(r[1], 340500)
+
+    def test_solde_capture_aberrant_refuse(self):
+        # 161 281 445 (référence/OCR lu comme solde) -> refusé, ne gonfle pas le patrimoine
+        self.assertIsNone(N.detect_balance("MTN\nSolde 161 281 445"))
+        self.assertGreater(N.MOMO_BALANCE_MAX, 0)
+
 
 class TestReleveMoMo(unittest.TestCase):
     RELEVE = ("Details de la transaction\n"
