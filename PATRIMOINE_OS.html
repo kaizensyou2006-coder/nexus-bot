@@ -148,10 +148,10 @@ body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:0;bac
 .an-seg button.on{background:var(--gs);color:var(--gl);font-weight:700}
 /* Tuiles chiffrées : un nombre qui se lit sans graphe */
 .an-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(178px,1fr));gap:14px;margin-bottom:18px}
-.an-tile{background:var(--card);border:1px solid var(--border);border-radius:var(--r12);padding:15px 16px;position:relative;overflow:hidden}
+.an-tile{background:var(--card);border:1px solid var(--border);border-radius:var(--r12);padding:15px 16px;position:relative;overflow:hidden;min-width:0}
 .an-tile::after{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--tc,var(--g));opacity:.85}
-.an-tl{font-size:9px;letter-spacing:1.6px;text-transform:uppercase;color:var(--t2);font-family:var(--fm)}
-.an-tv{font-family:var(--fn);font-size:23px;font-weight:800;color:var(--t0);margin:7px 0 3px;line-height:1.1;letter-spacing:-.5px}
+.an-tl{font-size:9px;letter-spacing:1.6px;text-transform:uppercase;color:var(--t2);font-family:var(--fm);overflow-wrap:anywhere}
+.an-tv{font-family:var(--fn);font-size:clamp(18px,2vw,22px);font-weight:800;color:var(--t0);margin:7px 0 3px;line-height:1.12;letter-spacing:-.5px;overflow-wrap:anywhere}
 .an-th{font-size:10.5px;color:var(--t1);line-height:1.45}
 .an-spark{height:30px;margin-top:9px;position:relative}
 .ch-note{font-family:var(--fb);font-size:11px;font-weight:400;color:var(--t2);letter-spacing:0;margin-left:8px}
@@ -2461,7 +2461,7 @@ function injectTabOptimizer(){
   const fab=document.createElement('button');
   fab.id='tab-optimize-fab';fab.type='button';fab.title="Optimiser cet onglet avec l'IA";
   fab.innerHTML='✨ Optimiser';
-  fab.style.cssText='position:fixed;right:18px;bottom:18px;z-index:70;border:none;border-radius:24px;padding:11px 17px;font-family:var(--fb);font-weight:800;font-size:13px;cursor:pointer;background:linear-gradient(135deg,var(--gl),var(--gd));color:var(--bg);box-shadow:0 10px 30px -8px rgba(201,162,39,.6)';
+  fab.style.cssText='position:fixed;right:22px;bottom:84px;z-index:901;border:none;border-radius:24px;padding:10px 15px;font-family:var(--fb);font-weight:800;font-size:12.5px;cursor:pointer;background:linear-gradient(135deg,var(--gl),var(--gd));color:var(--bg);box-shadow:0 10px 30px -8px rgba(201,162,39,.6)';
   fab.onclick=optimizeCurrentTab;
   document.body.appendChild(fab);
   const ovl=document.createElement('div');ovl.className='ovl';ovl.id='ovl-optim';
