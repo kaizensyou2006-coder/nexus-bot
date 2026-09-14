@@ -655,8 +655,16 @@ def detect_network(text):
     return "moov" if re.search(r"moov", text or "", re.I) else "mtn"
 
 def detect_balance(text):
-    """Capture d'accueil (MTN/Moov) : extrait le SOLDE -> (net, montant) ou None."""
-    m = re.search(r"solde[^\d]{0,18}(\d[\d   .,]*\d|\d)", text or "", re.I)
+    """Capture d'accueil / relevé (MTN/Moov) : extrait le SOLDE -> (net, montant) ou None.
+    Priorité au libellé exact « Solde Disponible » (le vrai solde du compte, en haut du
+    relevé MTN), pour ne PAS confondre avec le numéro de portefeuille (+229 0161281445),
+    l'ID de transaction ou le solde courant d'une ligne — source du bug « 161 281 445 »."""
+    t = text or ""
+    # 1) Libellé explicite MTN : "Solde Disponible: 7 046 FCFA".
+    m = re.search(r"solde\s+disponible[^\d]{0,12}(\d[\d   .,]*\d|\d)", t, re.I)
+    # 2) Repli générique "solde ... : X", mais jamais un numéro/portefeuille.
+    if not m:
+        m = re.search(r"solde(?!\s+disponible)[^\d]{0,12}(\d[\d   .,]*\d|\d)", t, re.I)
     if not m:
         return None
     val = _eur(m.group(1))

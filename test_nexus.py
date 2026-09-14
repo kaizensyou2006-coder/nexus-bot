@@ -87,6 +87,12 @@ class TestSmsMoMo(unittest.TestCase):
         self.assertIsNone(N.detect_balance("MTN\nSolde 161 281 445"))
         self.assertGreater(N.MOMO_BALANCE_MAX, 0)
 
+    def test_solde_disponible_prioritaire_vs_numero(self):
+        # Le numéro de portefeuille (+229 0161281445) ne doit PAS être pris pour le solde :
+        # "Solde Disponible" fait foi (bug réel du relevé MTN).
+        txt = "Numero de portefeuille +229 0161281445 Profil MTNBJ Solde Disponible: 7 046 FCFA -1500"
+        self.assertEqual(N.detect_balance(txt), ("mtn", 7046.0))
+
 
 class TestReleveMoMo(unittest.TestCase):
     RELEVE = ("Details de la transaction\n"
