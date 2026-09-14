@@ -567,6 +567,17 @@ textarea.cinp::placeholder{color:var(--t3);}
 
   <div class="an-tiles" id="an-tiles"></div>
 
+  <!-- Ce que les agents en concluent (relie l'analyse aux 18 agents) -->
+  <div class="card" id="an-agents" style="margin-bottom:18px;border-color:rgba(201,162,39,.28);background:linear-gradient(135deg,rgba(201,162,39,.09),rgba(15,15,27,.4))">
+    <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap">
+      <div style="width:30px;height:30px;border-radius:9px;background:rgba(201,162,39,.18);display:flex;align-items:center;justify-content:center;flex:none">🧠</div>
+      <div style="font-weight:800;font-family:var(--fn);color:var(--gl)">Ce que les agents en concluent</div>
+      <span style="font-size:11px;color:var(--t2)">18 agents · non contractuel</span>
+      <button class="btn btn-gold btn-sm" style="margin-left:auto" onclick="analyzeAnalytics()">⚡ Analyser</button>
+    </div>
+    <div id="an-agents-out" style="margin-top:12px;font-size:12px;color:var(--t2)">Clique « Analyser » — les agents lisent ton tableau de bord et sortent les priorités chiffrées.</div>
+  </div>
+
   <!-- Décomposition + santé -->
   <div class="row-flex" style="margin-bottom:18px;align-items:flex-start">
     <div class="card card-glow" style="flex:1.6;min-width:0">
@@ -2021,6 +2032,9 @@ function anRenderStruct(){
                  ticks:{color:'#5A5A7A',font:{size:10,family:'JetBrains Mono'},callback:v=>v+'%'}},
               y:{stacked:true,grid:{display:false},border:{display:false},ticks:{display:false}}}}});
   anLeg('lg-an-struct',top.map((s,i)=>({n:s.n,c:i<7?DV[i]:DV_OTHER,v:((s.v/tot)*100).toFixed(1)+'%'})));
+  // Alerte concentration : une poche > 50% du patrimoine = risque à signaler.
+  if(top[0]&&top[0].v/tot>0.5){const e=document.getElementById('lg-an-struct');
+    if(e)e.insertAdjacentHTML('beforeend','<div style="flex-basis:100%;font-size:11px;color:var(--warn);background:rgba(249,115,22,.08);border:1px solid rgba(249,115,22,.25);border-radius:10px;padding:8px 11px;margin-top:8px">⚠️ '+Math.round(top[0].v/tot*100)+'% sur <b>'+esc(top[0].n)+'</b> — concentration élevée'+(/bitget|crypto/i.test(top[0].n)?', forte volatilité':'')+'.</div>');}
   // Les soldes negatifs sont exclus de la barre : on le dit plutot que de les effacer.
   if(neg.length){const e=document.getElementById('lg-an-struct');
     if(e)e.insertAdjacentHTML('beforeend','<div style="flex-basis:100%;font-size:10.5px;color:var(--t2);margin-top:5px">Hors barre — '+neg.length+' compte'+(neg.length>1?'s':'')+' à découvert : '+neg.map(x=>esc(x.n)+' '+anSigned(x.v)).join(' · ')+'</div>');}
@@ -2480,6 +2494,22 @@ async function optimizeCurrentTab(){
     if(!r.ok||!d.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
     renderAgentCards(d,'optim-out');
   }catch(e){out.innerHTML='<div style="font-size:12px;color:var(--err)">Erreur : '+esc(e.message)+'</div>';}
+}
+/* Bande « Ce que les agents concluent » du Tableau de bord (agent contextuel). */
+async function analyzeAnalytics(){
+  const out=document.getElementById('an-agents-out');if(!out)return;
+  const srv=(typeof aiServer==='function')?aiServer():'';
+  if(!srv){out.innerHTML='<span style="color:var(--warn)">Configure le serveur NEXUS (⚙ Paramètres) pour activer les agents.</span>';return;}
+  const btn=document.querySelector('#an-agents button');if(btn)btn.disabled=true;
+  out.innerHTML='<div style="display:flex;align-items:center;gap:8px;color:var(--t2)"><div class="typing"><span></span><span></span><span></span></div> Les agents analysent ton tableau de bord…</div>';
+  const ctx=(typeof tabContextSummary==='function')?tabContextSummary('Tableau de bord'):'';
+  try{
+    const r=await fetch(srv+'/agents',{method:'POST',headers:(typeof nexusHdrs==='function')?nexusHdrs({'Content-Type':'application/json'}):{'Content-Type':'application/json'},signal:AbortSignal.timeout(120000),body:JSON.stringify({agent:'context',view:'Tableau de bord — analyse approfondie',context:ctx})});
+    const d=await r.json();
+    if(!r.ok||!d.ok)throw new Error((d&&d.error)||('HTTP '+r.status));
+    renderAgentCards(d,'an-agents-out');
+  }catch(e){out.innerHTML='<span style="color:var(--err)">Erreur : '+esc(e.message)+'</span>';}
+  finally{if(btn)btn.disabled=false;}
 }
 function renderAI(){const msgs=document.getElementById('chat-msgs'),suggs=document.getElementById('chat-suggs');if(!UI.chatMsgs.length){msgs.innerHTML='<div class="cmsg"><div class="cav ai">N</div><div class="cbub"><strong>Bonjour ! Je suis NEXUS IA.</strong><br>J\'ai accès complet à vos données. L\'IA passe par votre <strong>serveur NEXUS</strong> (clé sécurisée côté serveur). Lancez un <strong>agent d\'optimisation</strong> ci-dessus, ou posez-moi une question.</div></div>';suggs.innerHTML=SUGGS.map((s,i)=>`<button type="button" class="sugg" onclick="insertSugg(${i})">${esc(s)}</button>`).join('');}else{renderChatMsgs();suggs.innerHTML='';}}
 /* La réponse du modèle était insérée en innerHTML sans échappement : un libellé
