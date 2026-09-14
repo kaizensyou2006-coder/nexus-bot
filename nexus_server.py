@@ -752,7 +752,10 @@ MOMO_BALANCE_MAX = int(_conf("MOMO_BALANCE_MAX") or "30000000")   # 30 M FCFA
 _recent_raw = []  # [(ts, texte)] dedup des SMS bruts recus dans les 5 dernieres minutes
 
 def momo_ingest_text(text, src="sms"):
-    """Recoit un SMS brut (MacroDroid -> /momo), deduplique, parse et stocke."""
+    """Recoit un texte (SMS MoMo, RELEVE complet, ou releve NSIA) via /momo :
+    deduplique, parse, stocke les operations, ET capture le SOLDE (Solde Disponible)
+    ou le releve NSIA quand ils sont presents. Permet de corriger le patrimoine par
+    l'API authentifiee, comme un depot de fichier sur Discord."""
     text = (text or "").strip()
     if not text:
         return 0
@@ -766,8 +769,22 @@ def momo_ingest_text(text, src="sms"):
     for it in items:
         it["src"] = src
     n = add_momo(items)
-    if not n:
-        log.info("SMS recu mais aucun montant detecte: %r", text[:120])
+    # Capture du SOLDE si le texte est un releve / une capture d'accueil (jamais aberrant).
+    bal = detect_balance(text)
+    if bal:
+        net, val = bal
+        STATE.setdefault("balances", {})[net] = {"amount": val, "ts": now}
+        STATE["alert_flags"] = {}          # le total change volontairement
+        save_state()
+        log.info("solde %s capture via /momo: %s", net, fmt_xof(val))
+    # Releve NSIA (uniquement si ce n'est pas un releve MoMo avec des operations).
+    if not items:
+        ns = parse_nsia(text)
+        if ns:
+            set_nsia(ns)
+            log.info("NSIA capture via /momo: %s", fmt_xof(ns.get("total", 0)))
+    if not n and not bal:
+        log.info("texte recu mais aucun montant/solde detecte: %r", text[:120])
     return n
 
 # ----------------------- NSIA : releve de portefeuille -----------------------
